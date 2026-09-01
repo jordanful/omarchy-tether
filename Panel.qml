@@ -45,6 +45,24 @@ Panel {
   readonly property bool inConversation: openThread !== ""
   readonly property var openRow: service ? service.openThreadRow : null
 
+  readonly property var wifi: service ? service.wifi : Model.wifiState(false, ({}))
+  readonly property bool wifiReady: !!service && service.wifiReady
+  readonly property string connectionSummary: Model.connectionSummary(state, wifi)
+  readonly property bool bothQuiet: state.level !== "ok" && wifi.level !== "ok"
+
+  readonly property string listTitle: unread > 0 ? "Tether · " + unread + " unread" : "Tether"
+  readonly property string conversationTitle: openRow ? openRow.title : openThread
+  // The address under a name, or the size of the thread when the name already
+  // is the address and repeating it would say nothing.
+  readonly property string conversationSubtitle: {
+    if (!openRow) return ""
+    if (openRow.named && openRow.address !== "") return openRow.address
+    if (openRow.count > 0) return openRow.count + (openRow.count === 1 ? " message" : " messages")
+    return ""
+  }
+
+  readonly property var clipboard: Model.clipboardPreview(service ? service.clipboardText : "")
+
   readonly property bool showPreviews: Model.truthy(setting("showPreviews", true), true)
   readonly property bool hideWhenDisconnected: Model.truthy(setting("hideWhenDisconnected", false), false)
 
@@ -139,6 +157,14 @@ Panel {
     composer.text = ""
   }
 
+  // Quickshell has no file dialog, so the picker is zenity — the GTK one that
+  // is already present wherever a portal is, and whose stdout is just the path.
+  function chooseFile() {
+    if (!service || service.sendingFile || filePicker.running) return
+    service.clearFileSendMessage()
+    filePicker.running = true
+  }
+
   function launchApp() {
     Quickshell.execDetached(["tether-gtk"])
     close()
@@ -185,6 +211,12 @@ Panel {
     }
 
     function back(): void { root.goBack() }
+
+    // Send a file without touching the picker, for a script or a keybinding:
+    //   omarchy-shell tether sendFile ~/report.pdf
+    function sendFile(path: string): void {
+      if (root.service) root.service.sendFile(path)
+    }
   }
 
   BarIconButton {
@@ -317,21 +349,59 @@ Panel {
         anchors.fill: parent
         spacing: Style.space(14)
 
-        // ---------- Hero: what the link is doing ----------
+        // ---------- Hero ----------
+        // One row that changes role. In the list it is the mark, the name and
+        // what is connected; inside a conversation the mark gives way to a back
+        // control and the labels become who you are talking to. The previous
+        // shape kept a fixed header and tucked a small chevron under it, which
+        // is exactly the thing an eye skips.
         Item {
+          id: hero
           width: parent.width
-          implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, refreshButton.implicitHeight)
+          implicitHeight: Math.max(Style.space(34), heroLabels.implicitHeight, refreshButton.implicitHeight)
+
+          // Declared first so it sits under the controls: the whole header is
+          // the way back, and the button on top of it keeps its own hover.
+          MouseArea {
+            anchors.left: parent.left
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            anchors.right: refreshButton.left
+            enabled: root.inConversation
+            visible: enabled
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.goBack()
+          }
 
           Text {
-            id: heroIcon
-            textFormat: Text.PlainText
+            id: heroMark
+            visible: !root.inConversation
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
+            width: Style.space(34)
+            horizontalAlignment: Text.AlignHCenter
+            textFormat: Text.PlainText
             text: Model.GLYPH.bubble
             color: root.fg
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.display
             opacity: root.state.level === "ok" ? 1.0 : 0.5
+          }
+
+          PanelActionButton {
+            id: backButton
+            visible: root.inConversation
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            size: Style.space(34)
+            fontSize: Style.font.heading
+            bordered: true
+            iconText: Model.GLYPH.back
+            tooltipText: "Back to conversations"
+            foreground: root.fg
+            hoverColor: root.fg
+            fontFamily: root.bar.fontFamily
+            onClicked: root.goBack()
           }
 
           PanelActionButton {
@@ -348,16 +418,16 @@ Panel {
 
           Column {
             id: heroLabels
-            anchors.left: heroIcon.right
-            anchors.leftMargin: Style.space(14)
-            anchors.right: parent.right
-            anchors.rightMargin: refreshButton.width + Style.space(12)
+            anchors.left: parent.left
+            anchors.leftMargin: Style.space(34) + Style.space(12)
+            anchors.right: refreshButton.left
+            anchors.rightMargin: Style.space(10)
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(2)
 
             Text {
               textFormat: Text.PlainText
-              text: root.unread > 0 ? "Messages · " + root.unread + " unread" : "Messages"
+              text: root.inConversation ? root.conversationTitle : root.listTitle
               color: root.fg
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.title
@@ -367,9 +437,10 @@ Panel {
             }
 
             Text {
+              visible: !root.inConversation
               textFormat: Text.PlainText
-              text: root.state.title.toUpperCase()
-              color: root.state.level === "ok" ? Qt.darker(root.fg, 1.4) : root.attention
+              text: root.connectionSummary.toUpperCase()
+              color: root.bothQuiet ? root.attention : Qt.darker(root.fg, 1.4)
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
@@ -377,20 +448,18 @@ Panel {
               elide: Text.ElideRight
               width: parent.width
             }
-          }
-        }
 
-        // The daemon writes these reasons for people, so they are shown rather
-        // than reworded into something less specific.
-        Text {
-          visible: root.state.level !== "ok" && root.state.detail !== ""
-          width: parent.width
-          textFormat: Text.PlainText
-          text: root.state.detail
-          color: root.muted
-          font.family: root.bar.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          wrapMode: Text.WordWrap
+            Text {
+              visible: root.inConversation && root.conversationSubtitle !== ""
+              textFormat: Text.PlainText
+              text: root.conversationSubtitle
+              color: root.muted
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+              width: parent.width
+            }
+          }
         }
 
         PanelSeparator { foreground: root.fg }
@@ -456,60 +525,115 @@ Panel {
           }
         }
 
+        // ---------- What is connected ----------
+        // Tether runs two radios and they fail independently: Bluetooth can be
+        // carrying messages while Wi-Fi is down and the clipboard is not
+        // shared, or the reverse. One combined "connected" would be a lie half
+        // the time, so both are named, with what each one actually carries.
+        Column {
+          id: transports
+          visible: !root.inConversation
+          width: parent.width
+          spacing: Style.space(8)
+
+          PanelSeparator { foreground: root.fg }
+
+          PanelSectionHeader {
+            text: "CONNECTION"
+            foreground: root.fg
+            fontFamily: root.bar.fontFamily
+          }
+
+          TransportRow {
+            width: parent.width
+            glyph: Model.GLYPH.bluetooth
+            label: "Bluetooth"
+            carries: "messages, notifications"
+            transport: root.state
+          }
+
+          TransportRow {
+            width: parent.width
+            glyph: Model.GLYPH.wifi
+            label: "Wi-Fi"
+            carries: "clipboard, files"
+            transport: root.wifi
+          }
+        }
+
+        // ---------- Clipboard ----------
+        // Only while Wi-Fi is up, because that is the transport that carries
+        // it. There is no send button on purpose: the daemon mirrors every
+        // copy to the phone by itself, and the phone pulls on demand — see the
+        // README. What is useful here is seeing what it would get.
+        Column {
+          id: clipboardSection
+          visible: !root.inConversation && root.wifiReady
+          width: parent.width
+          spacing: Style.space(6)
+
+          PanelSeparator { foreground: root.fg }
+
+          Item {
+            width: parent.width
+            implicitHeight: Math.max(clipboardHeader.implicitHeight, clipboardRefresh.implicitHeight)
+
+            PanelSectionHeader {
+              id: clipboardHeader
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "CLIPBOARD"
+              foreground: root.fg
+              fontFamily: root.bar.fontFamily
+            }
+
+            PanelActionButton {
+              id: clipboardRefresh
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              size: Style.space(20)
+              fontSize: Style.font.iconSmall
+              iconText: Model.GLYPH.refresh
+              tooltipText: "Re-read the clipboard"
+              foreground: root.fg
+              hoverColor: root.fg
+              fontFamily: root.bar.fontFamily
+              onClicked: if (root.service) root.service.requestClipboard()
+            }
+          }
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            text: root.clipboard.empty ? "Nothing on the clipboard" : root.clipboard.text
+            color: root.clipboard.empty ? root.muted : root.fg
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            font.italic: root.clipboard.empty
+            elide: Text.ElideRight
+            maximumLineCount: 2
+            wrapMode: Text.Wrap
+          }
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            text: root.clipboard.empty
+              ? "Copy anything and the iPhone gets it."
+              : Model.clipboardSummary(root.clipboard) + " · shared with the iPhone"
+            color: root.muted
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+          }
+        }
+
         // ---------- One conversation ----------
         Column {
           id: conversationView
           visible: root.inConversation
           width: parent.width
           spacing: Style.space(10)
-
-          Item {
-            width: parent.width
-            implicitHeight: Math.max(backButton.implicitHeight, conversationLabels.implicitHeight)
-
-            PanelActionButton {
-              id: backButton
-              anchors.left: parent.left
-              anchors.verticalCenter: parent.verticalCenter
-              iconText: Model.GLYPH.back
-              tooltipText: "Back to conversations"
-              foreground: root.fg
-              hoverColor: root.fg
-              fontFamily: root.bar.fontFamily
-              onClicked: root.goBack()
-            }
-
-            Column {
-              id: conversationLabels
-              anchors.left: backButton.right
-              anchors.leftMargin: Style.space(8)
-              anchors.right: parent.right
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.space(1)
-
-              Text {
-                textFormat: Text.PlainText
-                text: root.openRow ? root.openRow.title : root.openThread
-                color: root.fg
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.subtitle
-                font.bold: true
-                elide: Text.ElideRight
-                width: parent.width
-              }
-
-              Text {
-                visible: !!root.openRow && root.openRow.named && root.openRow.address !== ""
-                textFormat: Text.PlainText
-                text: root.openRow ? root.openRow.address : ""
-                color: root.muted
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.caption
-                elide: Text.ElideRight
-                width: parent.width
-              }
-            }
-          }
 
           ListView {
             id: messageList
@@ -626,9 +750,36 @@ Panel {
         // ---------- Footer ----------
         PanelSeparator { foreground: root.fg }
 
+        // Whatever the daemon said about the last transfer, in its own words.
+        Text {
+          visible: !!root.service && root.service.fileSendMessage !== ""
+          width: parent.width
+          textFormat: Text.PlainText
+          text: root.service
+            ? ((root.service.fileSendOk ? "" : Model.GLYPH.alert + "  ") + root.service.fileSendMessage)
+            : ""
+          color: root.service && root.service.fileSendOk ? root.muted : root.attention
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+        }
+
         Row {
           width: parent.width
           spacing: Style.space(8)
+
+          Button {
+            // Wi-Fi is the transport that carries files, so the button is only
+            // offered when there is something on the other end of it.
+            visible: !root.inConversation && root.wifiReady
+            enabled: !(root.service && root.service.sendingFile)
+            text: root.service && root.service.sendingFile ? "Sending…" : "Send file…"
+            iconText: Model.GLYPH.upload
+            bordered: true
+            foreground: root.fg
+            fontFamily: root.bar.fontFamily
+            onClicked: root.chooseFile()
+          }
 
           Button {
             text: "Open Tether"
@@ -780,6 +931,89 @@ Panel {
     }
   }
 
+  // One radio: what it is, what it carries, and whether it is up. The second
+  // line does double duty — what the transport carries while it is healthy, and
+  // the daemon's own explanation when it is not. So a working row teaches and a
+  // broken one diagnoses, without a separate error line for either.
+  component TransportRow: Item {
+    id: transportRoot
+
+    required property string glyph
+    required property string label
+    required property string carries
+    required property var transport
+
+    readonly property bool up: !!transport && transport.level === "ok"
+    readonly property string detail: up
+      ? carries
+      : ((transport && transport.detail) ? transport.detail : carries)
+
+    implicitHeight: transportContent.implicitHeight
+
+    Item {
+      id: transportContent
+      anchors.left: parent.left
+      anchors.right: parent.right
+      implicitHeight: Math.max(transportGlyph.implicitHeight, transportText.implicitHeight)
+
+      Text {
+        id: transportGlyph
+        anchors.left: parent.left
+        anchors.top: parent.top
+        width: Style.space(22)
+        horizontalAlignment: Text.AlignHCenter
+        textFormat: Text.PlainText
+        text: transportRoot.glyph
+        color: transportRoot.up ? root.fg : Qt.darker(root.fg, 1.7)
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.icon
+      }
+
+      Text {
+        id: transportState
+        anchors.right: parent.right
+        anchors.top: parent.top
+        textFormat: Text.PlainText
+        text: Model.shortState(transportRoot.transport)
+        color: transportRoot.up ? Qt.darker(root.fg, 1.3) : root.attention
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+      }
+
+      Column {
+        id: transportText
+        anchors.left: transportGlyph.right
+        anchors.leftMargin: Style.space(8)
+        anchors.right: transportState.left
+        anchors.rightMargin: Style.space(8)
+        anchors.top: parent.top
+        spacing: Style.space(1)
+
+        Text {
+          textFormat: Text.PlainText
+          text: transportRoot.label
+          color: root.fg
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+          elide: Text.ElideRight
+          width: parent.width
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          text: transportRoot.detail
+          color: root.muted
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+          width: parent.width
+        }
+      }
+    }
+  }
+
   // One message. Incoming sits left, outgoing right, the way a thread is read.
   component MessageBubble: Column {
     id: bubbleRoot
@@ -874,6 +1108,22 @@ Panel {
             }
           }
         }
+      }
+    }
+  }
+
+  Process {
+    id: filePicker
+    command: ["zenity", "--file-selection", "--title=Send a file to your iPhone"]
+
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var path = Model.pickedPath(text)
+        // Cancelling exits non-zero with an empty stdout. That is the user
+        // changing their mind, not a failure, and it gets no message.
+        if (path === "") return
+        if (root.service) root.service.sendFile(path)
       }
     }
   }

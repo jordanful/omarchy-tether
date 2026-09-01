@@ -49,6 +49,7 @@ Item {
   // ---- state --------------------------------------------------------------
   property var link: ({})            // last bt_connection_changed
   property var btStatus: ({})        // last bt_status
+  property var snapshot: ({})        // last state_snapshot: the Wi-Fi side
   property var allThreads: []        // every conversation tetherd knows
   property int unreadTotal: 0
   property int unreadThreads: 0
@@ -60,12 +61,24 @@ Item {
   property bool sending: false
   property string sendError: ""
 
+  // What the iPhone would pull if it asked for the clipboard right now.
+  property string clipboardText: ""
+  property bool clipboardKnown: false
+
+  property bool sendingFile: false
+  property string fileSendMessage: ""
+  property bool fileSendOk: true
+
   // Handles already sent to the phone as read, so reopening a thread does not
   // re-send the same batch.
   property var markedRead: ({})
 
   readonly property var visibleThreads: Model.visibleThreads(allThreads, threadLimit)
-  readonly property var state: Model.statusFor(daemonUp, link)
+  // Two transports, two states. Bluetooth carries messages and notifications;
+  // Wi-Fi carries the clipboard and files. Either can be up alone.
+  readonly property var state: Model.bluetoothState(daemonUp, link)
+  readonly property var wifi: Model.wifiState(daemonUp, snapshot)
+  readonly property bool wifiReady: Model.wifiReady(wifi)
   readonly property string barTooltip: Model.barTooltip(state, unreadTotal)
   readonly property var openThreadRow: Model.findThread(allThreads, openThread)
 
@@ -123,6 +136,29 @@ Item {
     onTriggered: root.restartSocket()
   }
 
+  // client_connected and friends say what changed but not what the whole list
+  // now looks like, so the snapshot is re-read rather than patched. Coalesced,
+  // because a reconnecting phone produces several in a row.
+  Timer {
+    id: snapshotRefresh
+    interval: 300
+    repeat: false
+    onTriggered: root.request({ "command": "state_snapshot" })
+  }
+
+  // A file goes out over the network to a phone that may be slow or gone.
+  Timer {
+    id: fileSendTimeout
+    interval: 120000
+    repeat: false
+    onTriggered: {
+      if (!root.sendingFile) return
+      root.sendingFile = false
+      root.fileSendOk = false
+      root.fileSendMessage = "The transfer did not finish. The file may not have arrived."
+    }
+  }
+
   // A conversation list is cheap and several events can land together, so
   // re-listing is coalesced rather than run once per message.
   Timer {
@@ -157,10 +193,21 @@ Item {
   }
 
   function onDaemonConnected(socket) {
+    // subscribe replies with a state_snapshot and the Bluetooth link, so the
+    // Wi-Fi side needs no separate request here.
     requestOn(socket, { "command": "subscribe" })
     requestOn(socket, { "command": "bt_status" })
     requestOn(socket, { "command": "bt_list_threads" })
+    requestOn(socket, { "command": "clipboard_get" })
     if (openThread !== "") requestOn(socket, { "command": "bt_list_messages", "thread": openThread })
+  }
+
+  function onFileSendResult(event) {
+    fileSendTimeout.stop()
+    sendingFile = false
+    var result = Model.fileSendResult(event)
+    fileSendOk = result.ok
+    fileSendMessage = result.message
   }
 
   function onDaemonLost() {
@@ -168,7 +215,9 @@ Item {
     // restart; the hero says the connection is gone, which is the honest
     // reading of a list that is no longer being updated.
     link = ({})
+    snapshot = ({})
     sending = false
+    sendingFile = false
     messagesLoading = false
   }
 
@@ -205,6 +254,23 @@ Item {
       break
     case "bt_send_result":
       onSendResult(event)
+      break
+    case "state_snapshot":
+      snapshot = event
+      break
+    // The Wi-Fi side is pushed too: these three are what keep the transport row
+    // honest without anything on a timer asking.
+    case "client_connected":
+    case "untrusted_client_connected":
+    case "client_disconnected":
+      snapshotRefresh.restart()
+      break
+    case "clipboard_content":
+      clipboardText = String(event.content || "")
+      clipboardKnown = true
+      break
+    case "file_send_complete":
+      onFileSendResult(event)
       break
     default:
       break
@@ -291,6 +357,31 @@ Item {
     return true
   }
 
+  function requestClipboard() {
+    request({ "command": "clipboard_get" })
+  }
+
+  // The daemon opens its own connection to the phone per send and reports back
+  // with file_send_complete, so this returns as soon as the ask is in.
+  function sendFile(path) {
+    var target = String(path || "").trim()
+    if (target === "" || sendingFile) return false
+    if (!request({ "command": "send_file", "path": target })) {
+      fileSendOk = false
+      fileSendMessage = "Tether is not running."
+      return false
+    }
+    sendingFile = true
+    fileSendOk = true
+    fileSendMessage = "Sending " + Model.fileName(target) + "…"
+    fileSendTimeout.restart()
+    return true
+  }
+
+  function clearFileSendMessage() {
+    if (!sendingFile) fileSendMessage = ""
+  }
+
   function refresh() {
     if (!daemonUp) {
       restartSocket()
@@ -298,6 +389,8 @@ Item {
     }
     request({ "command": "bt_status" })
     request({ "command": "bt_list_threads" })
+    request({ "command": "state_snapshot" })
+    request({ "command": "clipboard_get" })
     if (openThread !== "") request({ "command": "bt_list_messages", "thread": openThread })
   }
 

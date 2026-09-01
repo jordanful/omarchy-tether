@@ -34,7 +34,10 @@ var GLYPH = {
   check: String.fromCodePoint(0xF012C),    // nf-md-check
   refresh: String.fromCodePoint(0xF0450),  // nf-md-refresh
   external: String.fromCodePoint(0xF03CC), // nf-md-open-in-new
-  alert: String.fromCodePoint(0xF0028)     // nf-md-alert-circle
+  alert: String.fromCodePoint(0xF0028),    // nf-md-alert-circle
+  bluetooth: String.fromCodePoint(0xF00AF), // nf-md-bluetooth
+  wifi: String.fromCodePoint(0xF05A9),      // nf-md-wifi
+  upload: String.fromCodePoint(0xF0552)     // nf-md-upload
 }
 
 // Payloads and settings both cross the C++/QML boundary as array-like proxies,
@@ -316,9 +319,13 @@ function unreadHandles(rows, alreadyMarked) {
   return out
 }
 
-// One line for the hero, in the daemon's own wording wherever it supplies some.
-// level is "ok", "warn" or "down".
-function statusFor(daemonUp, link) {
+// Tether runs two independent transports and the panel has to be honest about
+// both: Bluetooth carries messages and notifications, Wi-Fi carries the
+// clipboard and files. Either can be up while the other is down, so they get a
+// state function each. level is "ok", "warn" or "down".
+
+// Bluetooth, in the daemon's own wording wherever it supplies some.
+function bluetoothState(daemonUp, link) {
   if (!daemonUp)
     return { level: "down", title: "Tether is not running", detail: "Start tetherd to see your messages." }
   var state = link || {}
@@ -331,6 +338,117 @@ function statusFor(daemonUp, link) {
   if (!state.map_open)
     return { level: "warn", title: "Messages not connected", detail: collapse(state.profile_reason) || collapse(state.map_error) }
   return { level: "ok", title: "Connected", detail: collapse(state.profile_reason) }
+}
+
+// Wi-Fi, read off the daemon's state_snapshot plus the client_connected and
+// client_disconnected events that keep it current.
+//
+// "Paired" and "connected" are different things here: a phone stays a known
+// host forever, and is only a connected client while the Tether app is
+// actually open and on the same network.
+function wifiState(daemonUp, snapshot) {
+  if (!daemonUp)
+    return { level: "down", title: "Tether is not running", detail: "Start tetherd to share the clipboard and files." }
+
+  var snap = snapshot || {}
+  var clients = toArray(snap.connected_clients)
+  var known = toArray(snap.paired_devices)
+
+  if (clients.length > 0) {
+    var client = null
+    for (var i = 0; i < clients.length && !client; i++) if (clients[i].paired) client = clients[i]
+    if (!client) client = clients[0]
+    var name = collapse(client.device_name)
+    if (name === "" || name === "Unknown Device") name = "iPhone"
+    return {
+      level: "ok",
+      title: name + " connected",
+      detail: "Clipboard and files are shared.",
+      device: name,
+      address: collapse(client.address)
+    }
+  }
+
+  if (known.length > 0)
+    return {
+      level: "warn",
+      title: "iPhone not on Wi-Fi",
+      detail: snap.mdns_available === false
+        ? "Paired, but this computer is not announcing itself on the network."
+        : "Paired. Open Tether on the iPhone, on the same network."
+    }
+
+  return {
+    level: "down",
+    title: "No Wi-Fi device paired",
+    detail: "Open Tether on the iPhone — it finds this computer by itself, then approve on both ends."
+  }
+}
+
+// Whether the panel should offer the things Wi-Fi carries.
+// The word on the right of a transport row. The full sentence is one line
+// below it, so this only has to separate the three cases at a glance.
+function shortState(state) {
+  if (!state) return ""
+  if (state.level === "ok") return "Connected"
+  if (state.level === "warn") return "Away"
+  return "Off"
+}
+
+// The hero's one line, which has to cover both transports at once. Naming what
+// currently works beats naming what is broken: "Messages only" tells you what
+// you can do, where "Wi-Fi disconnected" makes you work it out.
+function connectionSummary(bluetooth, wifi) {
+  var bt = bluetooth || {}
+  var wf = wifi || {}
+  if (bt.level === "down" && wf.level === "down" && bt.title === wf.title) return bt.title
+  var messages = bt.level === "ok"
+  var files = wf.level === "ok"
+  if (messages && files) return "Messages, clipboard and files"
+  if (messages) return "Messages only"
+  if (files) return "Clipboard and files only"
+  return "Nothing connected"
+}
+
+function wifiReady(wifi) {
+  return !!wifi && wifi.level === "ok"
+}
+
+// What the iPhone would receive if it pulled the clipboard right now. Kept
+// short: the row is a reassurance that the right thing is shared, not a viewer.
+function clipboardPreview(text, max) {
+  var value = String(text === undefined || text === null ? "" : text)
+  var lines = value.split("\n").length
+  var one = collapse(value, max === undefined ? 80 : max)
+  return { text: one, empty: one === "", lines: lines, chars: value.length }
+}
+
+function clipboardSummary(preview) {
+  if (!preview || preview.empty) return "Nothing on the clipboard"
+  if (preview.lines > 1) return preview.chars + " characters, " + preview.lines + " lines"
+  return preview.chars + (preview.chars === 1 ? " character" : " characters")
+}
+
+// file_send_complete carries a sentence written for a person; it is shown as
+// written rather than reworded into something vaguer.
+function fileSendResult(event) {
+  if (!event) return { ok: false, message: "" }
+  return {
+    ok: event.success === true,
+    message: collapse(event.message) || (event.success === true ? "Sent." : "The file could not be sent.")
+  }
+}
+
+// The path zenity prints, or "" when the picker was cancelled. Only the first
+// line is taken: multi-selection would hand back several, and this sends one.
+function pickedPath(stdout) {
+  var first = String(stdout === undefined || stdout === null ? "" : stdout).split("\n")[0]
+  return first.replace(/^\s+|\s+$/g, "")
+}
+
+function fileName(path) {
+  var parts = String(path || "").split("/")
+  return parts[parts.length - 1] || ""
 }
 
 function barTooltip(state, unread) {

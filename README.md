@@ -19,8 +19,14 @@ the bar; it does no Bluetooth of its own.
 - **One conversation at a time,** with day separators, sent ticks, and messages
   laid out the way a thread reads.
 - **Replies,** inline, when the phone's Messages connection is up.
-- **Live.** Nothing is polled. Tether pushes new messages, read receipts and
-  connection changes, and the bar follows within a moment.
+- **Both transports, named separately.** Tether runs two radios that fail
+  independently — Bluetooth carries messages and notifications, Wi-Fi carries
+  the clipboard and files — so the panel reports each one, with the daemon's
+  own explanation when something is wrong.
+- **The shared clipboard,** so you can see what the iPhone would pull.
+- **Send a file** to the phone from a picker, or from a script.
+- **Live.** Nothing is polled. Tether pushes new messages, read receipts,
+  connection changes and Wi-Fi arrivals, and the bar follows within a moment.
 
 ## Requirements
 
@@ -71,6 +77,34 @@ own window; middle-click refreshes.
 | `Esc` | back to the list, or close the panel |
 | `Tab` | walk to the next bar panel |
 
+## Clipboard and files
+
+These ride the **Wi-Fi** transport, so the panel only offers them while the
+Tether app on the iPhone is open and on the same network. Both sections
+disappear when it is not, rather than sitting there greyed out.
+
+**Send a file** opens a picker (zenity), then hands the path to the daemon,
+which does the transfer and reports back. The result — the daemon's own
+sentence, success or failure — appears above the buttons. Files can also be
+sent without the picker:
+
+```bash
+omarchy-shell tether sendFile ~/report.pdf
+```
+
+**The clipboard section** shows what the iPhone would receive if it asked for
+the clipboard right now, with a button to re-read it.
+
+**Why there is no Send Clipboard button.** Tether already mirrors the clipboard
+on its own: the daemon watches the Wayland selection and pushes every copy to
+the phone, and the phone pulls whenever you tap Get Clipboard in the iOS app.
+Nothing local can force a push — `clipboard_set` writes the daemon's cache
+*before* it writes the selection, so the watcher that would broadcast sees no
+change and stays silent. (Tether's own GTK app does have a Send Clipboard
+button; it sends a `clipboard_set` carrying no content, which the daemon drops
+on the floor.) Showing you what is shared is the honest version of that button,
+so that is what this does.
+
 ## Settings
 
 Set them with `omarchy bar set io.github.jordanful.tether <key> <value>`, or
@@ -100,6 +134,7 @@ omarchy-shell tether show
 omarchy-shell tether hide
 omarchy-shell tether back
 omarchy-shell tether openThread 'tel:+15551234567'
+omarchy-shell tether sendFile ~/report.pdf
 ```
 
 `openThread` jumps straight to one conversation, which makes a reasonable
@@ -130,6 +165,13 @@ same object never reconnects, and no error is emitted either. Left that way, the
 bar would go dark the first time `tetherd` restarted and stay dark until the
 whole shell was restarted. The reconnect timer therefore destroys the socket and
 builds a new one, which does connect.
+
+**The Wi-Fi side is pushed, not polled, too.** It would be easy to assume the
+`state_snapshot` that carries connected devices has to be re-read on a timer.
+It does not: the daemon emits `client_connected`, `untrusted_client_connected`
+and `client_disconnected` to local subscribers, and those are what prompt a
+re-read. So a phone joining the network shows up in the bar within a moment,
+and an idle plugin still issues nothing.
 
 **The unread count and the list have to agree.** `threadLimit` caps the list by
 recency, but an unread conversation can be older than the cap — so the hero
@@ -164,6 +206,13 @@ access, `tether --bt-solicit` is the next thing to try.
 **Conversations are listed but empty.** MAP is still syncing; give it a moment,
 or hit refresh.
 
+**Send file and the clipboard section are missing.** They ride Wi-Fi, and the
+Wi-Fi row will say why — usually that the Tether app is not open on the phone,
+or that the two are not on the same network.
+
+**The picker does not open.** It is `zenity`; install it (`omarchy pkg add
+zenity`) or send files with `omarchy-shell tether sendFile <path>` instead.
+
 **Nothing appears in the bar at all.** `omarchy plugin list --json | grep
 tether` should show it enabled, then `omarchy-shell shell rescanPlugins`. QML
 errors show up in `journalctl --user -t omarchy-shell`.
@@ -181,6 +230,13 @@ omarchy plugin validate .
 
 `Service.qml` owns the connection and the state; `Panel.qml` is the bar button
 and the popup, and draws only what the service hands it.
+
+Tether's daemon protocol is not documented anywhere, so the commands and events
+used here were read out of `net.cpp` and then checked against a running daemon,
+because the two do not always agree — `clipboard_available` is in the source but
+absent from 0.2.19's snapshot, and the enable command is `bt_set_enabled` rather
+than the `bt_enable` its CLI flag suggests. Anything uncertain is treated as
+missing rather than assumed.
 
 ## Licence
 

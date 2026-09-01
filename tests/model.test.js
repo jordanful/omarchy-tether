@@ -8,8 +8,10 @@ const source = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
 const Model = new Function(
   source + "; return { collapse, relativeTime, clockTime, dayLabel, initials, tintIndex, "
   + "threadRow, threadRows, findThread, visibleThreads, unreadTotal, unreadThreads, "
-  + "messageRow, messageRows, mergeMessage, applyReadState, unreadHandles, statusFor, "
-  + "barTooltip, truthy, clampInt, toArray, isLocalHandle, GLYPH }"
+  + "messageRow, messageRows, mergeMessage, applyReadState, unreadHandles, "
+  + "barTooltip, truthy, clampInt, toArray, isLocalHandle, GLYPH, "
+  + "bluetoothState, wifiState, wifiReady, clipboardPreview, clipboardSummary, "
+  + "fileSendResult, pickedPath, fileName, shortState, connectionSummary }"
 )()
 
 let failures = 0
@@ -150,19 +152,85 @@ check("unreadHandles skips what was already sent", Model.unreadHandles(list, { h
 
 // ---- connection ----------------------------------------------------------
 
-check("statusFor with no daemon", Model.statusFor(false, {}).level, "down")
-check("statusFor with no phone", Model.statusFor(true, { device_present: false }).level, "down")
-check("statusFor with the phone away",
-  Model.statusFor(true, { device_present: true, device_paired: true, classic_connected: false }).level, "warn")
-check("statusFor with messages down",
-  Model.statusFor(true, { device_present: true, device_paired: true, classic_connected: true, map_open: false }).level, "warn")
-check("statusFor connected",
-  Model.statusFor(true, { device_present: true, device_paired: true, classic_connected: true, map_open: true }).level, "ok")
+check("bluetoothState with no daemon", Model.bluetoothState(false, {}).level, "down")
+check("bluetoothState with no phone", Model.bluetoothState(true, { device_present: false }).level, "down")
+check("bluetoothState with the phone away",
+  Model.bluetoothState(true, { device_present: true, device_paired: true, classic_connected: false }).level, "warn")
+check("bluetoothState with messages down",
+  Model.bluetoothState(true, { device_present: true, device_paired: true, classic_connected: true, map_open: false }).level, "warn")
+check("bluetoothState connected",
+  Model.bluetoothState(true, { device_present: true, device_paired: true, classic_connected: true, map_open: true }).level, "ok")
 // The daemon writes these sentences for people; they are shown, not reworded.
-check("statusFor carries the daemon's own wording",
-  Model.statusFor(true, { device_present: true, device_paired: true, classic_connected: true, map_open: true,
+check("bluetoothState carries the daemon's own wording",
+  Model.bluetoothState(true, { device_present: true, device_paired: true, classic_connected: true, map_open: true,
     profile_reason: "Messages and contacts are connected." }).detail,
   "Messages and contacts are connected.")
+
+// ---- Wi-Fi -----------------------------------------------------------------
+// Paired and connected are different things: a phone stays a known host
+// forever, and is a connected client only while its app is open on the network.
+check("wifiState with no daemon", Model.wifiState(false, {}).level, "down")
+check("wifiState with nothing paired",
+  Model.wifiState(true, { connected_clients: [], paired_devices: [] }).level, "down")
+check("wifiState paired but away",
+  Model.wifiState(true, { connected_clients: [], paired_devices: [{ fingerprint: "a" }] }).level, "warn")
+check("wifiState connected",
+  Model.wifiState(true, { connected_clients: [{ device_name: "Jordan's iPhone", paired: true }] }).level, "ok")
+check("wifiState names the device",
+  Model.wifiState(true, { connected_clients: [{ device_name: "Jordan's iPhone", paired: true }] }).title,
+  "Jordan's iPhone connected")
+// The known-hosts dump stores "Unknown Device" when it never learned a name.
+check("wifiState falls back on a nameless device",
+  Model.wifiState(true, { connected_clients: [{ device_name: "Unknown Device", paired: true }] }).title,
+  "iPhone connected")
+check("wifiState prefers a paired client over an unpaired one",
+  Model.wifiState(true, { connected_clients: [{ device_name: "Stranger" }, { device_name: "Mine", paired: true }] }).device,
+  "Mine")
+check("wifiState mentions mDNS when it is the problem",
+  Model.wifiState(true, { connected_clients: [], paired_devices: [{ fingerprint: "a" }], mdns_available: false }).detail
+    .indexOf("announcing") >= 0, true)
+check("shortState ok", Model.shortState({ level: "ok" }), "Connected")
+check("shortState warn", Model.shortState({ level: "warn" }), "Away")
+check("shortState down", Model.shortState({ level: "down" }), "Off")
+
+// The summary names what works rather than what does not, because that is the
+// question being asked of a bar panel.
+var UP = { level: "ok" }, AWAY = { level: "warn" }
+check("connectionSummary both", Model.connectionSummary(UP, UP), "Messages, clipboard and files")
+check("connectionSummary bluetooth only", Model.connectionSummary(UP, AWAY), "Messages only")
+check("connectionSummary wifi only", Model.connectionSummary(AWAY, UP), "Clipboard and files only")
+check("connectionSummary neither", Model.connectionSummary(AWAY, AWAY), "Nothing connected")
+// When the daemon itself is down both transports say the same thing, and
+// saying it once is better than "Nothing connected".
+check("connectionSummary collapses a dead daemon",
+  Model.connectionSummary(Model.bluetoothState(false, {}), Model.wifiState(false, {})).indexOf("not running") >= 0, true)
+
+check("wifiReady", Model.wifiReady({ level: "ok" }), true)
+check("wifiReady is false while away", Model.wifiReady({ level: "warn" }), false)
+
+// ---- clipboard and files ---------------------------------------------------
+
+check("clipboardPreview collapses", Model.clipboardPreview("  two   words  ").text, "two words")
+check("clipboardPreview counts the raw text, not the collapsed one",
+  Model.clipboardPreview("ab\ncd").chars, 5)
+check("clipboardPreview counts lines", Model.clipboardPreview("a\nb\nc").lines, 3)
+check("clipboardPreview on nothing", Model.clipboardPreview("").empty, true)
+check("clipboardSummary empty", Model.clipboardSummary(Model.clipboardPreview("")), "Nothing on the clipboard")
+check("clipboardSummary singular", Model.clipboardSummary(Model.clipboardPreview("x")), "1 character")
+check("clipboardSummary multiline",
+  Model.clipboardSummary(Model.clipboardPreview("a\nb")), "3 characters, 2 lines")
+
+check("fileSendResult carries the daemon's sentence",
+  Model.fileSendResult({ success: false, message: "Send failed: No connected iPhone client is available." }).message,
+  "Send failed: No connected iPhone client is available.")
+check("fileSendResult ok", Model.fileSendResult({ success: true, message: "Sent report.pdf" }).ok, true)
+check("fileSendResult without a message", Model.fileSendResult({ success: false }).message,
+  "The file could not be sent.")
+
+check("pickedPath takes the first line", Model.pickedPath("/home/a/one.pdf\n/home/a/two.pdf\n"), "/home/a/one.pdf")
+check("pickedPath on a cancelled picker", Model.pickedPath(""), "")
+check("fileName", Model.fileName("/home/a/report.pdf"), "report.pdf")
+check("fileName of a bare name", Model.fileName("report.pdf"), "report.pdf")
 
 check("barTooltip counts", Model.barTooltip({ level: "ok" }, 3), "3 unread messages")
 check("barTooltip is singular at one", Model.barTooltip({ level: "ok" }, 1), "1 unread message")
