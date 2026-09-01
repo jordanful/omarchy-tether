@@ -161,6 +161,25 @@ node tests/model.test.js
 omarchy plugin validate .
 ```
 
+### Limits on what the daemon can do
+
+This runs inside `omarchy-shell`, the single process drawing the desktop, so a
+malformed or enormous payload freezes Hyprland's shell rather than one app. A
+buggy daemon is a likelier cause than a hostile one and the effect is the same,
+so everything the socket sends is bounded. Frames over 256 KB are dropped
+without being parsed. A listing keeps at most 500 conversations and 500
+messages, newest first. Message bodies cap at 4000 characters because
+`TextMetrics` lays them out on the UI thread, and names, addresses and keys cap
+at 200. Mark all read fans out to at most 50 threads.
+
+Replies cap at 4000 characters and paths at 4096, and `sendFile` takes absolute
+paths only. `socketPath` must be absolute; QML cannot stat a socket, so its
+owner and mode cannot be checked from here, and the default stays inside
+`$XDG_RUNTIME_DIR`, which systemd creates 0700.
+
+The plugin launches two processes, both with fixed arguments and no shell:
+`tether-gtk` and `zenity --file-selection`. It installs nothing.
+
 Tether's socket protocol is undocumented, so the commands used here were read
 out of `net.cpp` and then checked against a running daemon, because the two do
 not always agree. `clipboard_available` is in the source but missing from

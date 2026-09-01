@@ -40,9 +40,14 @@ Item {
 
   // ---- connection ---------------------------------------------------------
   readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || ""
-  readonly property string socketPath: socketPathOverride !== ""
-    ? socketPathOverride
-    : (runtimeDir !== "" ? runtimeDir + "/tether/tetherd.sock" : "")
+  // An override has to be an absolute path. QML cannot stat a socket, so the
+  // owner and mode of one cannot be checked from here; the default stays inside
+  // $XDG_RUNTIME_DIR, which systemd creates 0700 for the user.
+  readonly property string socketPath: {
+    if (socketPathOverride !== "")
+      return socketPathOverride.charAt(0) === "/" ? socketPathOverride : ""
+    return runtimeDir !== "" ? runtimeDir + "/tether/tetherd.sock" : ""
+  }
 
   readonly property bool daemonUp: socketHolder.item ? socketHolder.item.connected : false
 
@@ -64,6 +69,10 @@ Item {
   // What the iPhone would pull if it asked for the clipboard right now.
   property string clipboardText: ""
   property bool clipboardKnown: false
+
+  // Frames refused for length. Surfaced so a daemon behaving badly is visible
+  // rather than silently ignored.
+  property int oversizedFrames: 0
 
   property bool sendingFile: false
   property string fileSendMessage: ""
@@ -239,6 +248,12 @@ Item {
   }
 
   function handleLine(line) {
+    // Measured before it is parsed. JSON.parse on a multi-megabyte string
+    // blocks the QML thread, and that thread is drawing the desktop.
+    if (Model.frameTooLarge(line)) {
+      oversizedFrames++
+      return
+    }
     var text = String(line || "").trim()
     if (text === "") return
 
@@ -361,7 +376,7 @@ Item {
   // ---- actions ------------------------------------------------------------
 
   function openConversation(key) {
-    var wanted = String(key || "")
+    var wanted = Model.clampText(key, 200)
     if (wanted === openThread) return
     openThread = wanted
     messages = []
@@ -412,7 +427,7 @@ Item {
   }
 
   function sendReply(body) {
-    var text = String(body || "").trim()
+    var text = Model.replyBody(body)
     if (text === "" || openThread === "" || sending) return false
     if (!request({ "command": "bt_send_message", "thread": openThread, "body": text })) {
       sendError = "Tether is not running."
@@ -431,8 +446,14 @@ Item {
   // The daemon opens its own connection to the phone per send and reports back
   // with file_send_complete, so this returns as soon as the ask is in.
   function sendFile(path) {
-    var target = String(path || "").trim()
-    if (target === "" || sendingFile) return false
+    var target = Model.sendablePath(path)
+    if (target === "" || sendingFile) {
+      if (target === "" && !sendingFile) {
+        fileSendOk = false
+        fileSendMessage = "That is not an absolute file path."
+      }
+      return false
+    }
     if (!request({ "command": "send_file", "path": target })) {
       fileSendOk = false
       fileSendMessage = "Tether is not running."

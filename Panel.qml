@@ -742,6 +742,9 @@ Panel {
               anchors.rightMargin: Style.space(8)
               anchors.verticalCenter: parent.verticalCenter
               enabled: root.canReply && !(root.service && root.service.sending)
+              // Matches Model.MAX_REPLY_CHARS. Stopping the text at the field
+              // beats truncating it after the user thought it was sent.
+              maximumLength: 4000
               placeholderText: root.service && root.service.sending ? "Sending…" : "Reply…"
               foreground: root.fg
               onAccepted: root.submitReply()

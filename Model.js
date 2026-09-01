@@ -11,6 +11,35 @@ var WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
 var PREVIEW_MAX = 120
 
+// Everything below is a ceiling on what the daemon can make this plugin do.
+//
+// The socket is mode 0700 under $XDG_RUNTIME_DIR, so anything writing to it
+// already runs as the user. These limits are not there to stop an attacker who
+// has that; they are there because this code runs inside omarchy-shell, the one
+// process drawing the whole desktop. A malformed or enormous payload that would
+// merely break a standalone app freezes Hyprland's shell instead. A buggy
+// daemon is a likelier cause than a hostile one, and the cost is the same.
+var MAX_LINE_BYTES = 262144   // a frame longer than this is dropped unparsed
+var MAX_THREADS = 500         // conversations kept from one bt_threads
+var MAX_MESSAGES = 500        // messages kept from one bt_messages
+var MAX_BODY_CHARS = 4000     // a bubble's text; TextMetrics lays this out
+var MAX_FIELD_CHARS = 200     // names, addresses, thread keys, handles
+var MAX_REPLY_CHARS = 4000    // outgoing reply
+var MAX_PATH_CHARS = 4096     // send_file path, PATH_MAX
+var MAX_MARK_ALL_THREADS = 50 // requests one mark-all sweep may fan out
+
+// Hard cut, no ellipsis: this is a ceiling, not a preview.
+function clampText(text, max) {
+  var value = String(text === undefined || text === null ? "" : text)
+  return value.length > max ? value.substring(0, max) : value
+}
+
+// A frame is measured before it is parsed, because JSON.parse on a huge string
+// is the blocking call worth avoiding.
+function frameTooLarge(line) {
+  return String(line === undefined || line === null ? "" : line).length > MAX_LINE_BYTES
+}
+
 // tetherd mints a handle with this prefix for a message sent from here, before
 // the phone has listed its own copy. See core/include/tether/bluetooth/messages.hpp.
 var LOCAL_HANDLE_PREFIX = "local-"
@@ -140,10 +169,10 @@ function isLocalHandle(handle) {
 
 function threadRow(thread) {
   if (!thread) return null
-  var key = String(thread.thread || "")
+  var key = clampText(thread.thread, MAX_FIELD_CHARS)
   if (key === "") return null
-  var name = String(thread.name || "").trim()
-  var address = String(thread.address || "").trim()
+  var name = clampText(thread.name, MAX_FIELD_CHARS).trim()
+  var address = clampText(thread.address, MAX_FIELD_CHARS).trim()
   return {
     key: key,
     title: name || address || key,
@@ -166,7 +195,7 @@ function threadRows(threads) {
     if (row) rows.push(row)
   }
   rows.sort(function (a, b) { return b.timestamp - a.timestamp })
-  return rows
+  return rows.length > MAX_THREADS ? rows.slice(0, MAX_THREADS) : rows
 }
 
 function findThread(rows, key) {
@@ -193,10 +222,13 @@ function visibleThreads(rows, limit) {
 // The threads a "mark all read" sweep has to visit. Their messages are not in
 // memory — only the open conversation's are — so each one has to be fetched
 // before its handles can be marked.
+// Capped: a sweep sends one bt_list_messages per key, and a daemon reporting
+// thousands of unread threads would otherwise turn one click into a flood.
 function unreadThreadKeys(rows) {
   var out = []
   var list = toArray(rows)
-  for (var i = 0; i < list.length; i++) if ((list[i].unread || 0) > 0) out.push(list[i].key)
+  for (var i = 0; i < list.length && out.length < MAX_MARK_ALL_THREADS; i++)
+    if ((list[i].unread || 0) > 0) out.push(list[i].key)
   return out
 }
 
@@ -216,17 +248,19 @@ function unreadThreads(rows) {
 
 function messageRow(message) {
   if (!message) return null
-  var handle = String(message.handle || "")
+  var handle = clampText(message.handle, MAX_FIELD_CHARS)
   if (handle === "") return null
   return {
     handle: handle,
-    thread: String(message.thread || ""),
-    body: String(message.body || ""),
+    thread: clampText(message.thread, MAX_FIELD_CHARS),
+    // Capped because Panel.qml lays this out with TextMetrics and a wrapping
+    // Text, both of which are linear in the string and run on the UI thread.
+    body: clampText(message.body, MAX_BODY_CHARS),
     timestamp: Number(message.timestamp) || 0,
     outgoing: message.outgoing === true,
     read: message.read === true,
-    name: String(message.name || "").trim(),
-    address: String(message.address || "").trim(),
+    name: clampText(message.name, MAX_FIELD_CHARS).trim(),
+    address: clampText(message.address, MAX_FIELD_CHARS).trim(),
     // Sent from here and not yet echoed back by the phone.
     pending: message.outgoing === true && isLocalHandle(handle),
     dayBreak: ""
@@ -266,6 +300,8 @@ function messageRows(messages, now) {
     if (row) rows.push(row)
   }
   rows.sort(function (a, b) { return a.timestamp - b.timestamp })
+  // Keep the newest, since that is the end of the thread a reader lands on.
+  if (rows.length > MAX_MESSAGES) rows = rows.slice(rows.length - MAX_MESSAGES)
   return withDayBreaks(rows, now)
 }
 
@@ -297,6 +333,7 @@ function mergeMessage(rows, message, now) {
   }
   if (!replaced) out.push(row)
   out.sort(function (a, b) { return a.timestamp - b.timestamp })
+  if (out.length > MAX_MESSAGES) out = out.slice(out.length - MAX_MESSAGES)
   return withDayBreaks(out, now)
 }
 
@@ -497,6 +534,21 @@ function truthy(value, fallback) {
   if (text === "true" || text === "1" || text === "on" || text === "yes") return true
   if (text === "false" || text === "0" || text === "off" || text === "no") return false
   return fallback === true
+}
+
+// A reply the daemon will push over OBEX. Trimmed, capped, and empty means
+// "do not send".
+function replyBody(text) {
+  return clampText(text, MAX_REPLY_CHARS).replace(/^\s+|\s+$/g, "")
+}
+
+// send_file paths arrive from the picker and from IPC. Absolute only: a
+// relative path would resolve against the daemon's working directory, which is
+// not where the caller was looking.
+function sendablePath(path) {
+  var value = clampText(path, MAX_PATH_CHARS).replace(/^\s+|\s+$/g, "")
+  if (value === "" || value.charAt(0) !== "/") return ""
+  return value
 }
 
 function clampInt(value, fallback, min, max) {

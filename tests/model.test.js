@@ -12,7 +12,7 @@ const Model = new Function(
   + "barTooltip, truthy, clampInt, toArray, isLocalHandle, GLYPH, "
   + "bluetoothState, wifiState, wifiReady, clipboardPreview, clipboardSummary, "
   + "fileSendResult, pickedPath, fileName, shortState, connectionSummary, "
-  + "clipboardAvailable, unreadThreadKeys }"
+  + "clipboardAvailable, unreadThreadKeys, clampText, frameTooLarge, replyBody, sendablePath }"
 )()
 
 let failures = 0
@@ -277,6 +277,59 @@ check("clampInt reads a numeric string", Model.clampInt("20", 12, 1, 50), 20)
 // Array.isArray() is false.
 check("toArray copies an array-like", Model.toArray({ length: 2, 0: "a", 1: "b" }), ["a", "b"])
 check("toArray survives a non-list", Model.toArray(null), [])
+
+// ---- limits ----------------------------------------------------------------
+// This runs inside omarchy-shell, so an oversized payload freezes the desktop
+// rather than one app. Every one of these is a ceiling on what the daemon, or
+// an IPC caller, can make the plugin do.
+
+check("clampText cuts at the ceiling", Model.clampText("abcdef", 3), "abc")
+check("clampText leaves a short string alone", Model.clampText("ab", 5), "ab")
+check("clampText survives a non-string", Model.clampText(null, 5), "")
+
+check("frameTooLarge passes an ordinary line", Model.frameTooLarge('{"command":"bt_status"}'), false)
+check("frameTooLarge catches a huge frame", Model.frameTooLarge("x".repeat(262145)), true)
+check("frameTooLarge is inclusive at the limit", Model.frameTooLarge("x".repeat(262144)), false)
+
+// A body goes into TextMetrics and a wrapping Text, both linear and both on the
+// UI thread, so it is the field that most needs a ceiling.
+check("messageRow caps the body",
+  Model.messageRow({ handle: "a", body: "x".repeat(9000) }).body.length, 4000)
+check("messageRow caps the name",
+  Model.messageRow({ handle: "a", name: "n".repeat(900) }).name.length, 200)
+check("threadRow caps the key",
+  Model.threadRow({ thread: "t".repeat(900) }).key.length, 200)
+check("threadRow caps the address",
+  Model.threadRow({ thread: "t", address: "a".repeat(900) }).address.length, 200)
+
+check("threadRows caps how many conversations are kept",
+  Model.threadRows(Array.from({ length: 900 }, function (_, i) {
+    return { thread: "t" + i, timestamp: i }
+  })).length, 500)
+
+// Keeps the newest, because that is the end of the thread a reader lands on.
+var manyMessages = Array.from({ length: 900 }, function (_, i) {
+  return { handle: "h" + i, body: "b", timestamp: i }
+})
+var capped = Model.messageRows(manyMessages)
+check("messageRows caps how many messages are kept", capped.length, 500)
+check("messageRows keeps the newest", capped[capped.length - 1].handle, "h899")
+
+check("unreadThreadKeys caps a mark-all sweep",
+  Model.unreadThreadKeys(Array.from({ length: 900 }, function (_, i) {
+    return { key: "k" + i, unread: 1 }
+  })).length, 50)
+
+check("replyBody trims", Model.replyBody("  hi  "), "hi")
+check("replyBody caps", Model.replyBody("x".repeat(9000)).length, 4000)
+check("replyBody on nothing", Model.replyBody(""), "")
+
+// Relative paths would resolve against the daemon's working directory, not the
+// caller's, so they are refused rather than guessed at.
+check("sendablePath accepts an absolute path", Model.sendablePath("/home/a/x.pdf"), "/home/a/x.pdf")
+check("sendablePath refuses a relative path", Model.sendablePath("x.pdf"), "")
+check("sendablePath refuses nothing at all", Model.sendablePath(""), "")
+check("sendablePath caps length", Model.sendablePath("/" + "x".repeat(9000)).length, 4096)
 
 // ---- glyphs --------------------------------------------------------------
 // Above the BMP, so a "\uXXXX" escape cannot reach them and a surrogate slip
