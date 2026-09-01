@@ -159,6 +159,20 @@ check("bluetoothState with the phone away",
   Model.bluetoothState(true, { device_present: true, device_paired: true, classic_connected: false }).level, "warn")
 check("bluetoothState with messages down",
   Model.bluetoothState(true, { device_present: true, device_paired: true, classic_connected: true, map_open: false }).level, "warn")
+// ANCS rides its own LE link and lags the rest; the row must not claim to be
+// carrying notifications while it is still down.
+var BT_UP = { device_present: true, device_paired: true, classic_connected: true, map_open: true }
+check("bluetoothState is still ok while ANCS lags",
+  Model.bluetoothState(true, Object.assign({}, BT_UP, { ancs_ready: false })).level, "ok")
+check("bluetoothState notes that notifications are not live",
+  Model.bluetoothState(true, Object.assign({}, BT_UP, { ancs_ready: false, ancs_reason: "Waiting for the iPhone." })).note,
+  "Waiting for the iPhone.")
+check("bluetoothState has no note once ANCS is up",
+  Model.bluetoothState(true, Object.assign({}, BT_UP, { ancs_ready: true })).note, undefined)
+// A daemon that never mentions ancs_ready must not be read as "notifications down".
+check("bluetoothState has no note when ANCS is unreported",
+  Model.bluetoothState(true, BT_UP).note, undefined)
+
 check("bluetoothState connected",
   Model.bluetoothState(true, { device_present: true, device_paired: true, classic_connected: true, map_open: true }).level, "ok")
 // The daemon writes these sentences for people; they are shown, not reworded.

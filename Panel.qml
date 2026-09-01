@@ -963,8 +963,11 @@ Panel {
     required property var transport
 
     readonly property bool up: !!transport && transport.level === "ok"
+    // A transport that is up still gets to say something other than what it
+    // carries: Bluetooth uses this to admit that notifications are not live
+    // yet while messages already are.
     readonly property string detail: up
-      ? carries
+      ? ((transport && transport.note) ? transport.note : carries)
       : ((transport && transport.detail) ? transport.detail : carries)
 
     implicitHeight: transportContent.implicitHeight

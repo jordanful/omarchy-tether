@@ -337,7 +337,16 @@ function bluetoothState(daemonUp, link) {
     return { level: "warn", title: "iPhone disconnected", detail: collapse(state.link_reason) || "Waiting for the phone." }
   if (!state.map_open)
     return { level: "warn", title: "Messages not connected", detail: collapse(state.profile_reason) || collapse(state.map_error) }
-  return { level: "ok", title: "Connected", detail: collapse(state.profile_reason) }
+  // Messages are up. Notification mirroring rides a separate LE link that the
+  // iPhone reopens on its own schedule, so it is routinely down for a minute
+  // while everything else works — measured across a daemon restart, where MAP
+  // came back at once and ANCS took another 45 seconds. Reporting "messages,
+  // notifications" through that window is wrong about half of what it claims,
+  // so the note replaces it until ANCS is actually live.
+  var connected = { level: "ok", title: "Connected", detail: collapse(state.profile_reason) }
+  if (state.ancs_ready === false)
+    connected.note = collapse(state.ancs_reason) || "Messages only — notification mirroring is not active yet."
+  return connected
 }
 
 // Wi-Fi, read off the daemon's state_snapshot plus the client_connected and
