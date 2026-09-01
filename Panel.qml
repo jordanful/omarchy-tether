@@ -213,6 +213,12 @@ Panel {
 
     function back(): void { root.goBack() }
 
+    // Clear every unread flag, for a keybinding or a script:
+    //   omarchy-shell tether markAllRead
+    function markAllRead(): void {
+      if (root.service) root.service.markAllRead()
+    }
+
     // Send a file without touching the picker, for a script or a keybinding:
     //   omarchy-shell tether sendFile ~/report.pdf
     function sendFile(path: string): void {
@@ -256,7 +262,7 @@ Panel {
           id: mark
           anchors.centerIn: parent
           textFormat: Text.PlainText
-          text: Model.GLYPH.bubble
+          text: Model.GLYPH.link
           color: button.glyphColor
           font.family: button.fontFamily
           font.pixelSize: button.fontSize
@@ -359,7 +365,7 @@ Panel {
         Item {
           id: hero
           width: parent.width
-          implicitHeight: Math.max(Style.space(34), heroLabels.implicitHeight, refreshButton.implicitHeight)
+          implicitHeight: Math.max(Style.space(34), heroLabels.implicitHeight, heroActions.implicitHeight)
 
           // Declared first so it sits under the controls: the whole header is
           // the way back, and the button on top of it keeps its own hover.
@@ -367,7 +373,7 @@ Panel {
             anchors.left: parent.left
             anchors.top: parent.top
             anchors.bottom: parent.bottom
-            anchors.right: refreshButton.left
+            anchors.right: heroActions.left
             enabled: root.inConversation
             visible: enabled
             cursorShape: Qt.PointingHandCursor
@@ -382,7 +388,7 @@ Panel {
             width: Style.space(34)
             horizontalAlignment: Text.AlignHCenter
             textFormat: Text.PlainText
-            text: Model.GLYPH.bubble
+            text: Model.GLYPH.link
             color: root.fg
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.display
@@ -405,23 +411,43 @@ Panel {
             onClicked: root.goBack()
           }
 
-          PanelActionButton {
-            id: refreshButton
+          Row {
+            id: heroActions
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            iconText: Model.GLYPH.refresh
-            tooltipText: "Refresh"
-            foreground: root.fg
-            hoverColor: root.fg
-            fontFamily: root.bar.fontFamily
-            onClicked: if (root.service) root.service.refresh()
+            spacing: Style.space(2)
+
+            // Those flags cannot clear themselves once the phone stops serving
+            // the messages, so this is the only way back to zero.
+            PanelActionButton {
+              visible: !root.inConversation && root.unread > 0
+              iconText: Model.GLYPH.check
+              tooltipText: root.service && root.service.markingAll
+                ? "Marking everything read…"
+                : "Mark all as read"
+              enabled: !(root.service && root.service.markingAll)
+              foreground: root.fg
+              hoverColor: root.fg
+              fontFamily: root.bar.fontFamily
+              onClicked: if (root.service) root.service.markAllRead()
+            }
+
+            PanelActionButton {
+              id: refreshButton
+              iconText: Model.GLYPH.refresh
+              tooltipText: "Refresh"
+              foreground: root.fg
+              hoverColor: root.fg
+              fontFamily: root.bar.fontFamily
+              onClicked: if (root.service) root.service.refresh()
+            }
           }
 
           Column {
             id: heroLabels
             anchors.left: parent.left
             anchors.leftMargin: Style.space(34) + Style.space(12)
-            anchors.right: refreshButton.left
+            anchors.right: heroActions.left
             anchors.rightMargin: Style.space(10)
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(2)

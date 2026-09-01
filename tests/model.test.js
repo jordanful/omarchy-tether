@@ -12,7 +12,7 @@ const Model = new Function(
   + "barTooltip, truthy, clampInt, toArray, isLocalHandle, GLYPH, "
   + "bluetoothState, wifiState, wifiReady, clipboardPreview, clipboardSummary, "
   + "fileSendResult, pickedPath, fileName, shortState, connectionSummary, "
-  + "clipboardAvailable, sentInvisible }"
+  + "clipboardAvailable, sentInvisible, unreadThreadKeys }"
 )()
 
 let failures = 0
@@ -91,6 +91,9 @@ const rows = Model.threadRows([
   { thread: "c", timestamp: 20, unread: 0 }
 ])
 check("threadRows sorts newest first", rows.map(r => r.key), ["b", "c", "a"])
+check("unreadThreadKeys finds only the unread ones", Model.unreadThreadKeys(rows), ["b"])
+check("unreadThreadKeys on an all-read list", Model.unreadThreadKeys([{ key: "a", unread: 0 }]), [])
+
 check("unreadTotal sums", Model.unreadTotal(rows), 2)
 check("unreadThreads counts", Model.unreadThreads(rows), 1)
 check("findThread finds", Model.findThread(rows, "c").key, "c")
@@ -287,8 +290,8 @@ check("toArray survives a non-list", Model.toArray(null), [])
 // ---- glyphs --------------------------------------------------------------
 // Above the BMP, so a "\uXXXX" escape cannot reach them and a surrogate slip
 // would ship a broken icon.
-check("bubble glyph is one codepoint", Array.from(Model.GLYPH.bubble).length, 1)
-check("bubble glyph codepoint", Model.GLYPH.bubble.codePointAt(0), 0xF0367)
+check("link glyph is one codepoint", Array.from(Model.GLYPH.link).length, 1)
+check("link glyph codepoint", Model.GLYPH.link.codePointAt(0), 0xF0C1)
 check("send glyph codepoint", Model.GLYPH.send.codePointAt(0), 0xF048A)
 
 if (failures === 0) console.log("all model tests pass")

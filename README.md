@@ -108,6 +108,7 @@ sent without the picker:
 
 ```bash
 omarchy-shell tether sendFile ~/report.pdf
+omarchy-shell tether markAllRead
 ```
 
 **The clipboard section** shows what the iPhone would receive if it asked for
@@ -122,6 +123,24 @@ change and stays silent. (Tether's own GTK app does have a Send Clipboard
 button; it sends a `clipboard_set` carrying no content, which the daemon drops
 on the floor.) Showing you what is shared is the honest version of that button,
 so that is what this does.
+
+## The unread count, and clearing it
+
+The check button in the panel header marks **everything** read at once. It only
+appears when something is unread.
+
+It exists because the unread flags cannot clear themselves. iOS stops serving a
+message over MAP after roughly a day, and tetherd only refreshes read state for
+messages a listing still returns — so anything you read on the phone *after* it
+fell out of that window stays unread here permanently. Measured on a real
+mailbox: nine unread, every one of them one to two days old, none of them still
+listed by the phone. Opening a conversation clears that thread; the header
+button clears the lot.
+
+Marking read is sent to the phone as well when it will take it. For messages
+this old it usually will not, and the daemon says so — *"marked read on this
+computer only"* — which is the right outcome for a message you already read
+there.
 
 ## Settings
 
@@ -153,6 +172,7 @@ omarchy-shell tether hide
 omarchy-shell tether back
 omarchy-shell tether openThread 'tel:+15551234567'
 omarchy-shell tether sendFile ~/report.pdf
+omarchy-shell tether markAllRead
 ```
 
 `openThread` jumps straight to one conversation, which makes a reasonable
@@ -229,6 +249,10 @@ every poll and files anything it gets, so a thread shows what the other person
 said plus anything sent from this machine, and nothing typed on the phone. The
 conversation view says so above the reply box rather than letting a
 half-conversation look like a bug. Nothing here or in Tether can fix it.
+
+**The unread count is too high, and the messages are old.** They were read on
+the phone after iOS stopped serving them, so their read state froze. Press the
+check button in the header — see *The unread count, and clearing it* above.
 
 **Conversations are listed but empty.** MAP is still syncing; give it a moment,
 or hit refresh.

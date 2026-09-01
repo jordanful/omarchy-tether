@@ -25,7 +25,11 @@ var LOCAL_ECHO_WINDOW = 300
 // written as fromCodePoint because they sit above the BMP, where a "\uXXXX"
 // escape cannot reach them.
 var GLYPH = {
-  bubble: String.fromCodePoint(0xF0367),   // nf-md-message
+  // Tether's own mark is two interlocking rings, so the bar wears a link
+  // rather than a speech bubble — this plugin is a face for Tether, and the
+  // icon should say so. fa-link over md-link-variant because its strokes
+  // survive 16px; the variant thins out into a vertical chain.
+  link: String.fromCodePoint(0xF0C1),      // nf-fa-link
   phone: String.fromCodePoint(0xF011C),    // nf-md-cellphone
   account: String.fromCodePoint(0xF0004),  // nf-md-account
   back: String.fromCodePoint(0xF0141),     // nf-md-chevron-left
@@ -183,6 +187,16 @@ function visibleThreads(rows, limit) {
   for (var i = 0; i < list.length; i++) {
     if (i < cap || (list[i].unread || 0) > 0) out.push(list[i])
   }
+  return out
+}
+
+// The threads a "mark all read" sweep has to visit. Their messages are not in
+// memory — only the open conversation's are — so each one has to be fetched
+// before its handles can be marked.
+function unreadThreadKeys(rows) {
+  var out = []
+  var list = toArray(rows)
+  for (var i = 0; i < list.length; i++) if ((list[i].unread || 0) > 0) out.push(list[i].key)
   return out
 }
 

@@ -73,6 +73,11 @@ Item {
   // re-send the same batch.
   property var markedRead: ({})
 
+  // Threads whose messages were fetched only so their unread handles could be
+  // marked. See markAllRead().
+  property var markAllPending: ({})
+  property bool markingAll: false
+
   readonly property var visibleThreads: Model.visibleThreads(allThreads, threadLimit)
   // Two transports, two states. Bluetooth carries messages and notifications;
   // Wi-Fi carries the clipboard and files. Either can be up alone.
@@ -145,6 +150,17 @@ Item {
     interval: 300
     repeat: false
     onTriggered: root.request({ "command": "state_snapshot" })
+  }
+
+  // A thread that never answers must not leave the sweep spinning.
+  Timer {
+    id: markAllTimeout
+    interval: 15000
+    repeat: false
+    onTriggered: {
+      root.markingAll = false
+      root.markAllPending = ({})
+    }
   }
 
   // A file goes out over the network to a phone that may be slow or gone.
@@ -285,10 +301,40 @@ Item {
   }
 
   function applyMessages(thread, list) {
-    if (String(thread || "") !== openThread) return
+    var key = String(thread || "")
+
+    // A sweep asked for this thread purely to learn its unread handles.
+    if (markAllPending[key]) {
+      var handles = Model.unreadHandles(Model.messageRows(list), markedRead)
+      if (handles.length > 0) rememberMarked(handles)
+      var remaining = ({})
+      var left = 0
+      for (var t in markAllPending) {
+        if (t === key) continue
+        remaining[t] = true
+        left++
+      }
+      markAllPending = remaining
+      if (left === 0) {
+        markingAll = false
+        markAllTimeout.stop()
+      }
+    }
+
+    if (key !== openThread) return
     messages = Model.messageRows(list)
     messagesLoading = false
     if (markReadOnOpen) markOpenThreadRead()
+  }
+
+  // Sends the batch and records it, so a later fetch of the same thread does
+  // not ask the phone to mark the same handles twice.
+  function rememberMarked(handles) {
+    if (!request({ "command": "bt_mark_read", "handles": handles, "read": true })) return
+    var next = ({})
+    for (var key in markedRead) next[key] = true
+    for (var i = 0; i < handles.length; i++) next[handles[i]] = true
+    markedRead = next
   }
 
   function onMessage(event) {
@@ -338,11 +384,31 @@ Item {
   function markOpenThreadRead() {
     var handles = Model.unreadHandles(messages, markedRead)
     if (handles.length === 0) return
-    if (!request({ "command": "bt_mark_read", "handles": handles, "read": true })) return
-    var next = ({})
-    for (var key in markedRead) next[key] = true
-    for (var i = 0; i < handles.length; i++) next[handles[i]] = true
-    markedRead = next
+    rememberMarked(handles)
+  }
+
+  // Clear every unread flag at once.
+  //
+  // This exists because the flags cannot clear themselves. iOS stops serving a
+  // message over MAP after a day or so, and tetherd only refreshes read state
+  // for messages a listing still returns — so anything read on the phone after
+  // it left that window stays unread here for good. Measured: nine unread, all
+  // of them 30-31 August, none still listed by the phone.
+  //
+  // The daemon marks them read locally even when the phone will not take the
+  // sync ("marked read on this computer only"), which is exactly right for
+  // messages already read on the phone.
+  function markAllRead() {
+    var keys = Model.unreadThreadKeys(allThreads)
+    if (keys.length === 0) return
+    var pending = ({})
+    for (var i = 0; i < keys.length; i++) {
+      pending[keys[i]] = true
+      request({ "command": "bt_list_messages", "thread": keys[i] })
+    }
+    markAllPending = pending
+    markingAll = true
+    markAllTimeout.restart()
   }
 
   function sendReply(body) {
