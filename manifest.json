@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.jordanful.tether",
+  "name": "Tether",
+  "version": "1.0.0",
+  "author": "Jordan Fulghum",
+  "license": "MIT",
+  "description": "iPhone messages in the Omarchy bar: an unread dot, your recent conversations, and inline replies, read live from Tether's daemon.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Tether",
+    "description": "iPhone conversations and replies, from the bar. Needs Tether (tetherd) paired with an iPhone.",
+    "category": "Communication",
+    "aliases": [
+      "tether",
+      "iphone",
+      "imessage",
+      "messages",
+      "sms",
+      "texts",
+      "phone"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "hideWhenDisconnected": false,
+      "markReadOnOpen": true,
+      "showPreviews": true,
+      "threadLimit": 12,
+      "socketPath": ""
+    },
+    "schema": [
+      {
+        "key": "hideWhenDisconnected",
+        "type": "boolean",
+        "label": "Hide the icon when the iPhone is not connected",
+        "defaultValue": false
+      },
+      {
+        "key": "markReadOnOpen",
+        "type": "boolean",
+        "label": "Mark a conversation read when you open it",
+        "description": "Also marks it read on the iPhone, the same as Tether's own app. Turn off to leave the phone's unread state alone.",
+        "defaultValue": true
+      },
+      {
+        "key": "showPreviews",
+        "type": "boolean",
+        "label": "Show message previews in the conversation list",
+        "description": "Turn off to show who wrote, but not what they said.",
+        "defaultValue": true
+      },
+      {
+        "key": "threadLimit",
+        "type": "number",
+        "label": "Conversations to list",
+        "description": "Between 1 and 50.",
+        "defaultValue": 12
+      },
+      {
+        "key": "socketPath",
+        "type": "path",
+        "label": "Path to tetherd.sock",
+        "description": "Leave empty to use $XDG_RUNTIME_DIR/tether/tetherd.sock.",
+        "defaultValue": ""
+      }
+    ]
+  }
+}
