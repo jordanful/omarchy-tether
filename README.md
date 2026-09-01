@@ -31,8 +31,18 @@ the bar; it does no Bluetooth of its own.
 ## Requirements
 
 - **Omarchy** with `omarchy-shell` (the Quickshell bar).
-- **Tether**, installed and running, and already paired with an iPhone. On Arch
-  that is the `tether-bin` AUR package. Confirm it before installing this:
+- **[Tether](https://github.com/zackb/tether) 0.2.19 or newer**, installed,
+  running, and already paired with an iPhone. This plugin is only a face for it
+  and does nothing on its own.
+
+  On Arch it is the **`tether-bin`** AUR package — note that Tether's own README
+  says `yay -S tether`, which does not exist:
+
+  ```bash
+  yay -S tether-bin
+  ```
+
+  Then confirm the link before installing this:
 
   ```bash
   tether --bt-connection     # should report the link and profiles as connected
@@ -42,6 +52,14 @@ the bar; it does no Bluetooth of its own.
   If those two are unhappy, this plugin will faithfully show you that they are
   unhappy. Tether's own README covers pairing, `--bt-setup`, and the iPhone
   permission toggles.
+
+  Run `tetherd` before the bar can show anything. Tether ships no service unit,
+  so nothing starts it for you at login.
+- **`zenity`** — optional, only for the Send file picker. Without it, files can
+  still be sent with `omarchy-shell tether sendFile <path>`.
+
+Tested against Tether 0.2.19 and 0.2.21, whose command and event surfaces are
+identical.
 
 ## Install
 
