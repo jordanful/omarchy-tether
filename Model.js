@@ -433,6 +433,20 @@ function wifiReady(wifi) {
 
 // What the iPhone would receive if it pulled the clipboard right now. Kept
 // short: the row is a reassurance that the right thing is shared, not a viewer.
+// iOS advertises a `sent` folder over MAP and then serves nothing from it —
+// measured against the phone directly on 2026-09-01, where ListMessages("sent")
+// answered with an empty set while "inbox" returned messages, and the journal
+// held four outgoing messages in 149, all of them sent from here. So a thread
+// shows what the other person said plus anything sent from this machine, and
+// nothing you typed on the phone. Saying so next to the reply box stops a
+// half-conversation reading as a bug in this plugin.
+function sentInvisible(rows) {
+  var list = toArray(rows)
+  if (list.length === 0) return false
+  for (var i = 0; i < list.length; i++) if (list[i].outgoing) return false
+  return true
+}
+
 function clipboardPreview(text, max) {
   var value = String(text === undefined || text === null ? "" : text)
   var lines = value.split("\n").length

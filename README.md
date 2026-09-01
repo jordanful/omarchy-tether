@@ -203,6 +203,15 @@ phone is not. Those lines are the daemon's own wording — `tether
 button asks Tether to bring the link back up; if the phone never offers Messages
 access, `tether --bt-solicit` is the next thing to try.
 
+**No messages you sent from the phone.** They are not there to show. iOS
+advertises a `sent` folder over MAP and then serves nothing from it — asking the
+phone directly, `ListMessages("sent")` answers with an empty set while
+`ListMessages("inbox")` returns messages. Tether asks for the sent folder on
+every poll and files anything it gets, so a thread shows what the other person
+said plus anything sent from this machine, and nothing typed on the phone. The
+conversation view says so above the reply box rather than letting a
+half-conversation look like a bug. Nothing here or in Tether can fix it.
+
 **Conversations are listed but empty.** MAP is still syncing; give it a moment,
 or hit refresh.
 

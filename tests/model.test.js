@@ -12,7 +12,7 @@ const Model = new Function(
   + "barTooltip, truthy, clampInt, toArray, isLocalHandle, GLYPH, "
   + "bluetoothState, wifiState, wifiReady, clipboardPreview, clipboardSummary, "
   + "fileSendResult, pickedPath, fileName, shortState, connectionSummary, "
-  + "clipboardAvailable }"
+  + "clipboardAvailable, sentInvisible }"
 )()
 
 let failures = 0
@@ -230,6 +230,15 @@ check("wifiReady", Model.wifiReady({ level: "ok" }), true)
 check("wifiReady is false while away", Model.wifiReady({ level: "warn" }), false)
 
 // ---- clipboard and files ---------------------------------------------------
+
+// A thread with nothing outgoing is the normal case on iOS, not an empty one.
+check("sentInvisible on a one-sided thread",
+  Model.sentInvisible(Model.messageRows([{ handle: "a", body: "hi", timestamp: 1, outgoing: false }])), true)
+check("sentInvisible is false once something outgoing exists",
+  Model.sentInvisible(Model.messageRows([
+    { handle: "a", body: "hi", timestamp: 1, outgoing: false },
+    { handle: "b", body: "yo", timestamp: 2, outgoing: true }])), false)
+check("sentInvisible says nothing about an empty thread", Model.sentInvisible([]), false)
 
 check("clipboardPreview collapses", Model.clipboardPreview("  two   words  ").text, "two words")
 check("clipboardPreview counts the raw text, not the collapsed one",

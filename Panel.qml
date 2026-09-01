@@ -703,6 +703,17 @@ Panel {
             font.pixelSize: Style.font.bodySmall
           }
 
+          Text {
+            visible: root.inConversation && Model.sentInvisible(root.messages)
+            width: parent.width
+            textFormat: Text.PlainText
+            text: "iOS does not share messages you send from the phone, so only replies sent from here appear."
+            color: root.muted
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
           // ---------- Composer ----------
           Item {
             width: parent.width
