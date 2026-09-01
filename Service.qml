@@ -79,6 +79,7 @@ Item {
   readonly property var state: Model.bluetoothState(daemonUp, link)
   readonly property var wifi: Model.wifiState(daemonUp, snapshot)
   readonly property bool wifiReady: Model.wifiReady(wifi)
+  readonly property bool clipboardAvailable: Model.clipboardAvailable(snapshot)
   readonly property string barTooltip: Model.barTooltip(state, unreadTotal)
   readonly property var openThreadRow: Model.findThread(allThreads, openThread)
 

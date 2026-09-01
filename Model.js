@@ -410,6 +410,14 @@ function connectionSummary(bluetooth, wifi) {
   return "Nothing connected"
 }
 
+// Whether the compositor lets tetherd read the selection at all. 0.2.19 does
+// not report this, so a missing field means "assume it works" — the same
+// default Tether's own GTK app takes.
+function clipboardAvailable(snapshot) {
+  var snap = snapshot || {}
+  return snap.clipboard_available !== false
+}
+
 function wifiReady(wifi) {
   return !!wifi && wifi.level === "ok"
 }

@@ -37,7 +37,7 @@ Panel {
   readonly property color fg: bar ? bar.foreground : Color.foreground
   readonly property color muted: Qt.darker(fg, 1.5)
 
-  readonly property var state: service ? service.state : Model.statusFor(false, ({}))
+  readonly property var state: service ? service.state : Model.bluetoothState(false, ({}))
   readonly property int unread: service ? service.unreadTotal : 0
   readonly property var threads: service ? service.visibleThreads : []
   readonly property var messages: service ? service.messages : []
@@ -62,6 +62,7 @@ Panel {
   }
 
   readonly property var clipboard: Model.clipboardPreview(service ? service.clipboardText : "")
+  readonly property bool clipboardAvailable: !service || service.clipboardAvailable
 
   readonly property bool showPreviews: Model.truthy(setting("showPreviews", true), true)
   readonly property bool hideWhenDisconnected: Model.truthy(setting("hideWhenDisconnected", false), false)
@@ -589,6 +590,7 @@ Panel {
 
             PanelActionButton {
               id: clipboardRefresh
+              visible: root.clipboardAvailable
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
               size: Style.space(20)
@@ -602,7 +604,23 @@ Panel {
             }
           }
 
+          // A compositor with neither ext_data_control_v1 nor the wlr one gives
+          // tetherd no way to read the selection, and it says so in the
+          // snapshot. Reporting that beats showing an empty clipboard as if
+          // nothing had been copied.
           Text {
+            visible: !root.clipboardAvailable
+            width: parent.width
+            textFormat: Text.PlainText
+            text: "This compositor does not expose clipboard access, so clipboard sync is off."
+            color: root.muted
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            visible: root.clipboardAvailable
             width: parent.width
             textFormat: Text.PlainText
             text: root.clipboard.empty ? "Nothing on the clipboard" : root.clipboard.text
@@ -616,6 +634,7 @@ Panel {
           }
 
           Text {
+            visible: root.clipboardAvailable
             width: parent.width
             textFormat: Text.PlainText
             text: root.clipboard.empty

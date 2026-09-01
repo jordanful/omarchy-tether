@@ -11,7 +11,8 @@ const Model = new Function(
   + "messageRow, messageRows, mergeMessage, applyReadState, unreadHandles, "
   + "barTooltip, truthy, clampInt, toArray, isLocalHandle, GLYPH, "
   + "bluetoothState, wifiState, wifiReady, clipboardPreview, clipboardSummary, "
-  + "fileSendResult, pickedPath, fileName, shortState, connectionSummary }"
+  + "fileSendResult, pickedPath, fileName, shortState, connectionSummary, "
+  + "clipboardAvailable }"
 )()
 
 let failures = 0
@@ -204,6 +205,12 @@ check("connectionSummary neither", Model.connectionSummary(AWAY, AWAY), "Nothing
 // saying it once is better than "Nothing connected".
 check("connectionSummary collapses a dead daemon",
   Model.connectionSummary(Model.bluetoothState(false, {}), Model.wifiState(false, {})).indexOf("not running") >= 0, true)
+
+// 0.2.21 added this field; 0.2.19 omits it entirely, and a missing field must
+// not read as "clipboard sync is off".
+check("clipboardAvailable defaults to true when absent", Model.clipboardAvailable({}), true)
+check("clipboardAvailable honours a false", Model.clipboardAvailable({ clipboard_available: false }), false)
+check("clipboardAvailable honours a true", Model.clipboardAvailable({ clipboard_available: true }), true)
 
 check("wifiReady", Model.wifiReady({ level: "ok" }), true)
 check("wifiReady is false while away", Model.wifiReady({ level: "warn" }), false)
