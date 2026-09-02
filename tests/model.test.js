@@ -12,7 +12,8 @@ const Model = new Function(
   + "barTooltip, truthy, clampInt, toArray, isLocalHandle, GLYPH, "
   + "bluetoothState, wifiState, wifiReady, clipboardPreview, clipboardSummary, "
   + "fileSendResult, pickedPath, fileName, shortState, connectionSummary, "
-  + "clipboardAvailable, unreadThreadKeys, clampText, frameTooLarge, replyBody, sendablePath }"
+  + "clipboardAvailable, unreadThreadKeys, clampText, frameTooLarge, replyBody, sendablePath, "
+  + "emptyMarked, rememberHandles, markedSeen }"
 )()
 
 let failures = 0
@@ -330,6 +331,31 @@ check("sendablePath accepts an absolute path", Model.sendablePath("/home/a/x.pdf
 check("sendablePath refuses a relative path", Model.sendablePath("x.pdf"), "")
 check("sendablePath refuses nothing at all", Model.sendablePath(""), "")
 check("sendablePath caps length", Model.sendablePath("/" + "x".repeat(9000)).length, 4096)
+
+// The marked-read set lives as long as the login session, so it needs a
+// ceiling. Forgetting the oldest handle costs at most one duplicate
+// bt_mark_read; growing forever costs shell memory.
+var marked = Model.emptyMarked()
+check("emptyMarked starts empty", Model.rememberHandles(marked, []).order.length, 0)
+
+marked = Model.rememberHandles(Model.emptyMarked(), ["a", "b"])
+check("rememberHandles records", marked.order, ["a", "b"])
+check("markedSeen answers membership", Model.markedSeen(marked)["a"], true)
+check("markedSeen on an absent handle", Model.markedSeen(marked)["zz"], undefined)
+
+check("rememberHandles ignores a repeat",
+  Model.rememberHandles(marked, ["a"]).order, ["a", "b"])
+
+var big = Model.rememberHandles(Model.emptyMarked(),
+  Array.from({ length: 50 }, function (_, i) { return "h" + i }), 10)
+check("rememberHandles caps the set", big.order.length, 10)
+check("rememberHandles keeps the newest", big.order[big.order.length - 1], "h49")
+check("rememberHandles forgets the oldest", Model.markedSeen(big)["h0"], undefined)
+// The seen map has to shrink with the order, or the cap saves nothing.
+check("rememberHandles prunes the map too", Object.keys(Model.markedSeen(big)).length, 10)
+
+check("rememberHandles drops empty handles",
+  Model.rememberHandles(Model.emptyMarked(), ["", null]).order.length, 0)
 
 // ---- glyphs --------------------------------------------------------------
 // Above the BMP, so a "\uXXXX" escape cannot reach them and a surrogate slip

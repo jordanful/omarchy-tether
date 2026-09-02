@@ -79,8 +79,8 @@ Item {
   property bool fileSendOk: true
 
   // Handles already sent to the phone as read, so reopening a thread does not
-  // re-send the same batch.
-  property var markedRead: ({})
+  // re-send the same batch. A bounded FIFO: see Model.rememberHandles.
+  property var markedRead: Model.emptyMarked()
 
   // Threads whose messages were fetched only so their unread handles could be
   // marked. See markAllRead().
@@ -320,7 +320,7 @@ Item {
 
     // A sweep asked for this thread purely to learn its unread handles.
     if (markAllPending[key]) {
-      var handles = Model.unreadHandles(Model.messageRows(list), markedRead)
+      var handles = Model.unreadHandles(Model.messageRows(list), Model.markedSeen(markedRead))
       if (handles.length > 0) rememberMarked(handles)
       var remaining = ({})
       var left = 0
@@ -346,10 +346,7 @@ Item {
   // not ask the phone to mark the same handles twice.
   function rememberMarked(handles) {
     if (!request({ "command": "bt_mark_read", "handles": handles, "read": true })) return
-    var next = ({})
-    for (var key in markedRead) next[key] = true
-    for (var i = 0; i < handles.length; i++) next[handles[i]] = true
-    markedRead = next
+    markedRead = Model.rememberHandles(markedRead, handles)
   }
 
   function onMessage(event) {
@@ -397,7 +394,7 @@ Item {
   // own app does the same; markReadOnOpen turns it off for anyone who would
   // rather the phone not be told.
   function markOpenThreadRead() {
-    var handles = Model.unreadHandles(messages, markedRead)
+    var handles = Model.unreadHandles(messages, Model.markedSeen(markedRead))
     if (handles.length === 0) return
     rememberMarked(handles)
   }

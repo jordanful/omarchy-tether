@@ -27,6 +27,7 @@ var MAX_FIELD_CHARS = 200     // names, addresses, thread keys, handles
 var MAX_REPLY_CHARS = 4000    // outgoing reply
 var MAX_PATH_CHARS = 4096     // send_file path, PATH_MAX
 var MAX_MARK_ALL_THREADS = 50 // requests one mark-all sweep may fan out
+var MAX_MARKED_READ = 2000    // handles remembered as already marked read
 
 // Hard cut, no ellipsis: this is a ceiling, not a preview.
 function clampText(text, max) {
@@ -509,8 +510,11 @@ function fileSendResult(event) {
 
 // The path zenity prints, or "" when the picker was cancelled. Only the first
 // line is taken: multi-selection would hand back several, and this sends one.
+// Only the first line, and only MAX_PATH_CHARS of it. zenity is a fixed
+// argument vector with no interpolation, so a runaway result is not a realistic
+// threat, but the string this keeps is bounded regardless.
 function pickedPath(stdout) {
-  var first = String(stdout === undefined || stdout === null ? "" : stdout).split("\n")[0]
+  var first = clampText(stdout, MAX_PATH_CHARS).split("\n")[0]
   return first.replace(/^\s+|\s+$/g, "")
 }
 
@@ -549,6 +553,42 @@ function sendablePath(path) {
   var value = clampText(path, MAX_PATH_CHARS).replace(/^\s+|\s+$/g, "")
   if (value === "" || value.charAt(0) !== "/") return ""
   return value
+}
+
+// A fixed-size FIFO of handles already sent to the phone as read.
+//
+// This set only exists to stop the same handles being re-sent, so forgetting
+// the oldest costs at most one duplicate bt_mark_read. Growing it without a
+// ceiling costs shell memory for as long as the session lasts, and the shell
+// session lasts as long as the login does.
+function emptyMarked() {
+  return { order: [], seen: ({}) }
+}
+
+function rememberHandles(state, handles, max) {
+  var cap = (max === undefined || max <= 0) ? MAX_MARKED_READ : max
+  var order = toArray(state && state.order)
+  var seen = ({})
+  var i
+  for (i = 0; i < order.length; i++) seen[order[i]] = true
+
+  var incoming = toArray(handles)
+  for (i = 0; i < incoming.length; i++) {
+    var handle = clampText(incoming[i], MAX_FIELD_CHARS)
+    if (handle === "" || seen[handle]) continue
+    seen[handle] = true
+    order.push(handle)
+  }
+
+  if (order.length > cap) {
+    var dropped = order.splice(0, order.length - cap)
+    for (i = 0; i < dropped.length; i++) delete seen[dropped[i]]
+  }
+  return { order: order, seen: seen }
+}
+
+function markedSeen(state) {
+  return state && state.seen ? state.seen : ({})
 }
 
 function clampInt(value, fallback, min, max) {
