@@ -543,6 +543,91 @@ var PROXY_REASONS = {
   "usage": "The relay was started with the wrong arguments."
 }
 
+// ---- links -----------------------------------------------------------------
+// Message bodies come off someone else's phone, so nothing in them may reach a
+// rich-text renderer as markup. Qt's StyledText honours <img src>, and a remote
+// src makes the shell issue an unauthenticated GET with no user action, which is
+// why the stock notification plugin has to strip image tags before rendering.
+//
+// This does not have that problem, because it does not permit any markup from
+// the message at all: every run of the body is escaped first, and the only tags
+// in the result are anchors this function writes itself. An <img> in a message
+// arrives at the renderer as &lt;img&gt; and draws as text.
+
+var MAX_URL_CHARS = 2048
+
+function escapeMarkup(text) {
+  return String(text === undefined || text === null ? "" : text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+}
+
+// Sentence punctuation sits next to a link far more often than it belongs to
+// one, so it is trimmed off the end. A closing bracket is kept when the link
+// opened one itself, since that is a real part of some URLs.
+function trimUrlTail(url) {
+  var out = String(url || "")
+  while (out.length > 0 && ".,;:!?'\"".indexOf(out.charAt(out.length - 1)) >= 0)
+    out = out.substring(0, out.length - 1)
+  if (out.charAt(out.length - 1) === ")" && out.indexOf("(") < 0)
+    out = out.substring(0, out.length - 1)
+  return out
+}
+
+// What may be handed to a browser. Scheme-checked rather than pattern-guessed,
+// so a "javascript:" or "file:" run in a message is never launchable, and
+// re-checked at click time as well as at render time.
+function safeUrl(url) {
+  var value = clampText(url, MAX_URL_CHARS)
+  if (!/^https?:\/\/[^\/]/i.test(value)) return ""
+  if (/[\s<>"'\\`]/.test(value)) return ""
+  for (var i = 0; i < value.length; i++) {
+    var code = value.charCodeAt(i)
+    if (code < 0x20 || code === 0x7F) return ""
+  }
+  return value
+}
+
+// Escaped text with anchors around the http(s) runs. The result is safe to
+// render as StyledText; the plain body is what TextMetrics still measures,
+// since StyledText lays out the visible characters, not the tags.
+function linkify(text) {
+  var source = clampText(text, MAX_BODY_CHARS)
+  var pattern = /https?:\/\/[^\s<>"']+/gi
+  var out = ""
+  var last = 0
+  var match
+
+  while ((match = pattern.exec(source)) !== null) {
+    var trimmed = trimUrlTail(match[0])
+    if (trimmed === "") {
+      // Nothing usable, and lastIndex has already moved past the run, so the
+      // scan cannot stall here.
+      continue
+    }
+    out += escapeMarkup(source.substring(last, match.index))
+    var safe = safeUrl(trimmed)
+    if (safe === "") {
+      out += escapeMarkup(trimmed)
+    } else {
+      var shown = escapeMarkup(safe)
+      out += "<a href=\"" + shown + "\">" + shown + "</a>"
+    }
+    last = match.index + trimmed.length
+    // Resume immediately after the trimmed link, or the punctuation trimmed off
+    // the end would be dropped from the message.
+    pattern.lastIndex = last
+  }
+
+  return out + escapeMarkup(source.substring(last))
+}
+
+function hasLink(text) {
+  return /https?:\/\/[^\s<>"']/i.test(String(text || ""))
+}
+
 function proxyProblem(event) {
   var reason = String(event && event.reason ? event.reason : "")
   var detail = collapse(event && event.detail ? event.detail : "", 160)

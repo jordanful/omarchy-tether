@@ -166,6 +166,17 @@ Panel {
     filePicker.running = true
   }
 
+  // Re-checked here as well as when the anchor was written, and launched as an
+  // argv vector through Util.execArgv so the URL is never re-tokenized by a
+  // shell. `omarchy launch browser` honours xdg-settings rather than hardcoding
+  // a browser.
+  function openLink(url) {
+    var safe = Model.safeUrl(url)
+    if (safe === "") return
+    Util.execArgv(["omarchy", "launch", "browser", safe])
+    close()
+  }
+
   function launchApp() {
     Quickshell.execDetached(["tether-gtk"])
     close()
@@ -1128,13 +1139,32 @@ Panel {
           spacing: Style.space(2)
 
           Text {
+            id: bodyText
             width: parent.width
-            textFormat: Text.PlainText
-            text: bubbleRoot.message.body
+            // StyledText, but nothing from the message survives as markup:
+            // Model.linkify escapes every run and writes the anchors itself.
+            // See the note above linkify for why that matters here.
+            textFormat: Text.StyledText
+            text: Model.linkify(bubbleRoot.message.body)
             color: root.fg
+            // The foreground, so a link stays legible in any theme. Qt
+            // underlines anchors, which is the affordance doing the work.
+            linkColor: root.fg
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.bodySmall
             wrapMode: Text.Wrap
+            onLinkActivated: function (link) { root.openLink(link) }
+
+            // NoButton so the Text keeps its own click handling for anchors;
+            // this only borrows hover to show the cursor over one.
+            MouseArea {
+              anchors.fill: parent
+              acceptedButtons: Qt.NoButton
+              hoverEnabled: true
+              cursorShape: bodyText.linkAt(mouseX, mouseY) !== ""
+                ? Qt.PointingHandCursor
+                : Qt.ArrowCursor
+            }
           }
 
           Row {

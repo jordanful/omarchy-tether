@@ -13,7 +13,8 @@ const Model = new Function(
   + "bluetoothState, wifiState, wifiReady, clipboardPreview, clipboardSummary, "
   + "fileSendResult, pickedPath, fileName, shortState, connectionSummary, "
   + "clipboardAvailable, unreadThreadKeys, clampText, frameTooLarge, replyBody, sendablePath, "
-  + "emptyMarked, rememberHandles, markedSeen, proxyProblem }"
+  + "emptyMarked, rememberHandles, markedSeen, proxyProblem, "
+  + "linkify, safeUrl, escapeMarkup, trimUrlTail, hasLink }"
 )()
 
 let failures = 0
@@ -291,6 +292,57 @@ check("clampInt reads a numeric string", Model.clampInt("20", 12, 1, 50), 20)
 // Array.isArray() is false.
 check("toArray copies an array-like", Model.toArray({ length: 2, 0: "a", 1: "b" }), ["a", "b"])
 check("toArray survives a non-list", Model.toArray(null), [])
+
+// ---- links -----------------------------------------------------------------
+// Bodies come off someone else's phone and are rendered as StyledText, so the
+// escaping is the load-bearing part. Qt's StyledText honours <img src> and
+// would issue a real network GET for a remote one.
+
+check("escapeMarkup handles the four that matter",
+  Model.escapeMarkup('&<>"'), "&amp;&lt;&gt;&quot;")
+check("escapeMarkup does ampersands first, not twice",
+  Model.escapeMarkup("&lt;"), "&amp;lt;")
+
+check("linkify leaves plain text alone", Model.linkify("hello there"), "hello there")
+check("linkify wraps a link",
+  Model.linkify("see https://example.com/x now"),
+  'see <a href="https://example.com/x">https://example.com/x</a> now')
+check("linkify handles two links",
+  Model.linkify("https://a.com/1 and https://b.com/2"),
+  '<a href="https://a.com/1">https://a.com/1</a> and <a href="https://b.com/2">https://b.com/2</a>')
+
+// A tag in the message must arrive at the renderer as text, never as a tag.
+check("linkify neutralises an image tag",
+  Model.linkify('<img src="http://evil/x.png">').indexOf("<img") < 0, true)
+check("linkify keeps the escaped angle brackets",
+  Model.linkify("<b>hi</b>"), "&lt;b&gt;hi&lt;/b&gt;")
+check("linkify escapes a bare ampersand", Model.linkify("a & b"), "a &amp; b")
+
+// Trailing punctuation belongs to the sentence, not the URL, but it must not
+// vanish from the message either.
+check("linkify trims a trailing full stop out of the link",
+  Model.linkify("go https://example.com/x."),
+  'go <a href="https://example.com/x">https://example.com/x</a>.')
+check("linkify keeps a bracket the link opened",
+  Model.linkify("https://en.wikipedia.org/wiki/A_(b)"),
+  '<a href="https://en.wikipedia.org/wiki/A_(b)">https://en.wikipedia.org/wiki/A_(b)</a>')
+
+check("safeUrl accepts https", Model.safeUrl("https://example.com/x"), "https://example.com/x")
+check("safeUrl accepts http", Model.safeUrl("http://example.com"), "http://example.com")
+// Everything else is unlaunchable by construction, not by pattern guessing.
+check("safeUrl refuses javascript", Model.safeUrl("javascript:alert(1)"), "")
+check("safeUrl refuses file", Model.safeUrl("file:///etc/passwd"), "")
+check("safeUrl refuses a scheme with no host", Model.safeUrl("https:///x"), "")
+check("safeUrl refuses whitespace", Model.safeUrl("https://a.com/ x"), "")
+check("safeUrl refuses a quote", Model.safeUrl('https://a.com/"x'), "")
+check("safeUrl refuses a backtick", Model.safeUrl("https://a.com/`x"), "")
+check("safeUrl refuses a control character", Model.safeUrl("https://a.com/\u0001x"), "")
+check("safeUrl caps length", Model.safeUrl("https://a.com/" + "x".repeat(9000)).length, 2048)
+check("linkify does not linkify javascript",
+  Model.linkify("javascript:alert(1)"), "javascript:alert(1)")
+
+check("hasLink finds one", Model.hasLink("go to https://a.com"), true)
+check("hasLink on plain text", Model.hasLink("no links here"), false)
 
 // ---- limits ----------------------------------------------------------------
 // This runs inside omarchy-shell, so an oversized payload freezes the desktop

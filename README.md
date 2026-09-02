@@ -65,6 +65,9 @@ The panel takes keyboard focus when it opens.
 | `Esc` | back to the list, or close the panel |
 | `Tab` | next bar panel |
 
+Links in a message are clickable and open in your default browser, the one
+`xdg-settings` names. Only `http` and `https` are ever launchable.
+
 Two radios carry different things and fail independently, so the panel reports
 each one. Bluetooth carries messages and notifications. Wi-Fi carries the
 clipboard and files. When either is down, the row shows the daemon's own
@@ -205,8 +208,17 @@ session cannot grow it without end.
 Replies cap at 4000 characters and paths at 4096, and `sendFile` takes absolute
 paths only. `socketPath` must be absolute, and the relay verifies the rest.
 
-The plugin launches three processes, all with fixed arguments and no shell:
-`tether-proxy`, `tether-gtk` and `zenity --file-selection`. It installs nothing.
+Message bodies render as `StyledText` so links can be anchors, but no markup
+from a message survives to the renderer: every run is escaped first and the only
+tags in the result are anchors the plugin writes itself. That matters because
+`StyledText` honours `<img src>`, and a remote one would make the shell issue an
+unauthenticated GET. An `<img>` in a message arrives as `&lt;img&gt;` and draws
+as text. Anything other than `http` or `https` is never turned into a link, and
+the URL is re-checked when clicked before it reaches the browser.
+
+The plugin launches four processes, all with fixed arguments and no shell:
+`tether-proxy`, `tether-gtk`, `zenity --file-selection`, and
+`omarchy launch browser <url>` for a clicked link. It installs nothing.
 
 Tether's socket protocol is undocumented, so the commands used here were read
 out of `net.cpp` and then checked against a running daemon, because the two do
