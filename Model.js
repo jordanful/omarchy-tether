@@ -523,6 +523,34 @@ function fileName(path) {
   return parts[parts.length - 1] || ""
 }
 
+// The relay's refusals, in words a person can act on. Its reason codes are
+// stable strings; an unknown one still surfaces rather than being swallowed,
+// because a silent refusal looks identical to tetherd being switched off.
+var PROXY_REASONS = {
+  "path-not-absolute": "The socket path must be absolute.",
+  "socket-missing": "No socket at that path. Is tetherd running?",
+  "not-a-socket": "That path is not a socket.",
+  "socket-foreign-owner": "That socket belongs to another user, so it was refused.",
+  "socket-writable": "That socket is writable by other users, so it was refused.",
+  "ancestor-writable": "A directory above that socket is writable by other users, so it was refused.",
+  "ancestor-foreign-owner": "A directory above that socket belongs to another user.",
+  "ancestor-not-a-directory": "The path above that socket is not a directory.",
+  "ancestor-unreadable": "A directory above that socket cannot be read.",
+  "peer-foreign-uid": "The process serving that socket runs as another user, so it was refused.",
+  "peercred-unavailable": "The peer's credentials could not be read, so the socket was refused.",
+  "connect-failed": "Could not connect to that socket.",
+  "write-failed": "The connection to tetherd broke while sending.",
+  "usage": "The relay was started with the wrong arguments."
+}
+
+function proxyProblem(event) {
+  var reason = String(event && event.reason ? event.reason : "")
+  var detail = collapse(event && event.detail ? event.detail : "", 160)
+  var text = PROXY_REASONS[reason]
+  if (!text) text = "The relay refused the socket. " + (reason === "" ? "No reason given." : reason)
+  return detail === "" ? text : text + " " + detail
+}
+
 function barTooltip(state, unread) {
   if (!state) return "Tether"
   if (state.level !== "ok") return state.title

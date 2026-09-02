@@ -1,0 +1,258 @@
+#!/usr/bin/env python3
+"""Bounded, verified relay between omarchy-shell and tetherd.
+
+Why this exists at all
+----------------------
+The panel used to open tetherd's UNIX socket directly from QML. Two checks the
+marketplace review asked for cannot be done there, and it is worth being
+precise about why rather than working around it badly:
+
+  * Quickshell's `SplitParser` accumulates bytes until it sees the delimiter,
+    inside C++, with no length property. A peer that never sends a newline grows
+    that buffer without bound, and a QML-side length check runs only once a
+    frame has already been assembled. The ceiling has to live in whatever does
+    the reading.
+  * `Quickshell.Io.Socket` exposes `path` and `connected` and nothing else. It
+    cannot stat the endpoint or read peer credentials, so the plugin has no way
+    to tell tetherd's socket from any other socket at that path.
+
+So the reading moves here. This process does the checks, enforces a hard frame
+ceiling, and hands the shell nothing but complete, bounded lines. The shell
+still parses JSON, but it can no longer be made to parse something enormous, and
+it can no longer be pointed at an endpoint nobody verified.
+
+It is deliberately small and has no dependencies beyond the standard library.
+
+Protocol
+--------
+  argv[1]        absolute path to tetherd.sock
+  stdout         one verified JSON frame per line, plus this relay's own
+                 {"command": "proxy_*"} lines
+  stdin          one JSON command per line, forwarded to the socket
+  exit status    0 when the peer closed, 2 when a check failed, 3 on overflow
+
+Every exit is normal from the shell's point of view: the panel restarts this
+relay on its retry timer, the same way it used to reopen the socket.
+"""
+
+import errno
+import json
+import os
+import select
+import socket
+import stat
+import struct
+import sys
+
+# A frame larger than this is a fault, not a message. The largest thing tetherd
+# legitimately sends is a full conversation listing, which measured about 40 KB
+# for a 500-message thread, so this leaves better than an order of magnitude.
+MAX_FRAME = 256 * 1024
+
+# Commands the panel sends are small and fixed in shape.
+MAX_COMMAND = 64 * 1024
+
+READ_CHUNK = 65536
+
+
+def emit(obj):
+    """One JSON object, one line, flushed. The only way this speaks to QML."""
+    sys.stdout.write(json.dumps(obj, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def fail(reason, detail=""):
+    emit({"command": "proxy_error", "reason": reason, "detail": detail})
+    sys.exit(2)
+
+
+def check_ancestors(path, uid):
+    """Every directory above the socket must be private.
+
+    A verified socket under a directory a stranger can write to is not
+    verified: they can move it aside and put their own there. So the whole
+    chain is walked, on the resolved path, because a symlinked component would
+    otherwise let the checks pass for one inode and the connection land on
+    another.
+    """
+    parent = os.path.dirname(path)
+    while True:
+        try:
+            info = os.stat(parent)
+        except OSError as error:
+            fail("ancestor-unreadable", "%s: %s" % (parent, error.strerror))
+
+        if not stat.S_ISDIR(info.st_mode):
+            fail("ancestor-not-a-directory", parent)
+
+        # root-owned system directories are expected above the runtime dir.
+        if info.st_uid not in (0, uid):
+            fail("ancestor-foreign-owner", "%s uid=%d" % (parent, info.st_uid))
+
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            fail("ancestor-writable", "%s mode=%o" % (parent, info.st_mode & 0o7777))
+
+        if parent == "/":
+            return
+        parent = os.path.dirname(parent)
+
+
+def check_socket(path, uid):
+    try:
+        info = os.lstat(path)
+    except OSError as error:
+        fail("socket-missing", "%s: %s" % (path, error.strerror))
+
+    if not stat.S_ISSOCK(info.st_mode):
+        fail("not-a-socket", path)
+    if info.st_uid != uid:
+        fail("socket-foreign-owner", "uid=%d" % info.st_uid)
+    if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        fail("socket-writable", "mode=%o" % (info.st_mode & 0o7777))
+
+
+def check_peer(sock, uid):
+    """SO_PEERCRED is the part QML has no access to at all.
+
+    It answers the question the path cannot: whoever is actually serving this
+    socket, right now, is it us.
+    """
+    try:
+        raw = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    except OSError as error:
+        fail("peercred-unavailable", error.strerror)
+
+    pid, peer_uid, peer_gid = struct.unpack("3i", raw)
+    if peer_uid != uid:
+        fail("peer-foreign-uid", "uid=%d pid=%d" % (peer_uid, pid))
+    return pid, peer_uid, peer_gid
+
+
+def relay(sock):
+    """Forward both directions, bounded in both.
+
+    Overflow ends the process rather than dropping the frame. A peer withholding
+    a delimiter is not going to recover, and exiting hands the panel a clean
+    restart instead of a relay sitting on a poisoned buffer.
+    """
+    from_daemon = bytearray()
+    from_shell = bytearray()
+    stdin_fd = sys.stdin.fileno()
+    stdin_open = True
+
+    while True:
+        watch = [sock] + ([stdin_fd] if stdin_open else [])
+        try:
+            ready, _, _ = select.select(watch, [], [])
+        except (OSError, select.error) as error:
+            if getattr(error, "errno", None) == errno.EINTR:
+                continue
+            raise
+
+        if sock in ready:
+            try:
+                chunk = sock.recv(READ_CHUNK)
+            except OSError:
+                chunk = b""
+            if not chunk:
+                emit({"command": "proxy_closed"})
+                return 0
+
+            from_daemon.extend(chunk)
+            while True:
+                cut = from_daemon.find(b"\n")
+                if cut < 0:
+                    break
+                line = bytes(from_daemon[:cut])
+                del from_daemon[: cut + 1]
+                if not line.strip():
+                    continue
+                # Already known to be under the ceiling, or the check below
+                # would have ended the process before the delimiter arrived.
+                sys.stdout.buffer.write(line + b"\n")
+                sys.stdout.buffer.flush()
+
+            if len(from_daemon) > MAX_FRAME:
+                emit({
+                    "command": "proxy_overflow",
+                    "limit": MAX_FRAME,
+                    "buffered": len(from_daemon),
+                })
+                sock.close()
+                return 3
+
+        if stdin_open and stdin_fd in ready:
+            chunk = os.read(stdin_fd, READ_CHUNK)
+            if not chunk:
+                stdin_open = False
+                continue
+
+            from_shell.extend(chunk)
+            while True:
+                cut = from_shell.find(b"\n")
+                if cut < 0:
+                    break
+                line = bytes(from_shell[:cut])
+                del from_shell[: cut + 1]
+                if not line.strip():
+                    continue
+                try:
+                    sock.sendall(line + b"\n")
+                except OSError as error:
+                    emit({"command": "proxy_error", "reason": "write-failed",
+                          "detail": error.strerror})
+                    return 0
+
+            # The panel's own commands are small and fixed in shape, so an
+            # oversized one means something is wrong on this side.
+            if len(from_shell) > MAX_COMMAND:
+                emit({"command": "proxy_overflow", "limit": MAX_COMMAND,
+                      "buffered": len(from_shell), "direction": "outbound"})
+                return 3
+
+
+def main(argv):
+    if len(argv) != 2:
+        emit({"command": "proxy_error", "reason": "usage",
+              "detail": "tether-proxy /path/to/tetherd.sock"})
+        return 2
+
+    path = argv[1]
+    if not path.startswith("/"):
+        fail("path-not-absolute", path)
+
+    # Checks run against the resolved path so a symlinked component cannot let
+    # them pass for one inode while the connection lands on another.
+    resolved = os.path.realpath(path)
+    uid = os.getuid()
+
+    check_ancestors(resolved, uid)
+    check_socket(resolved, uid)
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(resolved)
+    except OSError as error:
+        fail("connect-failed", error.strerror)
+
+    pid, peer_uid, _ = check_peer(sock, uid)
+    emit({"command": "proxy_ready", "path": resolved, "peer_pid": pid,
+          "peer_uid": peer_uid, "limit": MAX_FRAME})
+
+    try:
+        return relay(sock)
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv))
+    except KeyboardInterrupt:
+        sys.exit(0)
+    except BrokenPipeError:
+        # The shell went away. Nothing to report to, so leave quietly.
+        sys.exit(0)

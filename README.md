@@ -31,6 +31,9 @@ tether --bt-threads      # should list your conversations
 Start `tetherd` yourself. Tether ships no service unit, so nothing starts it at
 login.
 
+`python3` is required. It runs `tether-proxy`, the small relay that reads the
+socket. See below.
+
 `zenity` is optional and only used for the file picker. Without it,
 `omarchy-shell tether sendFile <path>` still works.
 
@@ -158,27 +161,52 @@ bar button and the popup, and draws only what the service hands it.
 
 ```bash
 node tests/model.test.js
+python3 tests/proxy.test.py
 omarchy plugin validate .
 ```
 
+The relay's tests run against real sockets in `$XDG_RUNTIME_DIR`, not mocks,
+because everything it does is a syscall.
+
+### The relay, and why reading does not happen in QML
+
+`tether-proxy` is a standard-library python3 script that sits between the shell
+and tetherd. The panel spawns it, reads bounded lines from its stdout, and
+writes commands to its stdin. It exists because two checks cannot be done from
+QML at all.
+
+`SplitParser` assembles bytes until it sees the delimiter, inside C++, with no
+length property. A peer that withholds a newline grows that buffer without
+bound, and a length test in QML runs only once a frame has already been built,
+which is too late. `Quickshell.Io.Socket` exposes `path` and `connected` and
+nothing else, so it cannot stat the endpoint or read peer credentials, and has
+no way to tell tetherd's socket from anything else at that path.
+
+The relay does both. It stats the socket and every directory above it, on the
+resolved path, refusing anything not owned by this user or writable by others.
+It checks `SO_PEERCRED`, so the process actually serving the socket has to be
+this user. It emits only complete frames under a 256 KB ceiling, and on overflow
+it drops the connection and exits rather than sitting on a poisoned buffer. Any
+refusal is reported in the Bluetooth row, naming the reason.
+
+The shell restarts the relay on the same retry timer that used to reopen the
+socket, so a relay that dies comes back in about four seconds.
+
 ### Limits on what the daemon can do
 
-This runs inside `omarchy-shell`, the single process drawing the desktop, so a
-malformed or enormous payload freezes Hyprland's shell rather than one app. A
-buggy daemon is a likelier cause than a hostile one and the effect is the same,
-so everything the socket sends is bounded. Frames over 256 KB are dropped
-without being parsed. A listing keeps at most 500 conversations and 500
-messages, newest first. Message bodies cap at 4000 characters because
-`TextMetrics` lays them out on the UI thread, and names, addresses and keys cap
-at 200. Mark all read fans out to at most 50 threads.
+This runs inside `omarchy-shell`, the single process drawing the desktop, so an
+oversized payload freezes Hyprland's shell rather than one app. A listing keeps
+at most 500 conversations and 500 messages, newest first. Message bodies cap at
+4000 characters because `TextMetrics` lays them out on the UI thread, and names,
+addresses, keys and handles cap at 200. Mark all read fans out to at most 50
+threads. The set of handles already marked read is a 2000-entry FIFO, so a long
+session cannot grow it without end.
 
 Replies cap at 4000 characters and paths at 4096, and `sendFile` takes absolute
-paths only. `socketPath` must be absolute; QML cannot stat a socket, so its
-owner and mode cannot be checked from here, and the default stays inside
-`$XDG_RUNTIME_DIR`, which systemd creates 0700.
+paths only. `socketPath` must be absolute, and the relay verifies the rest.
 
-The plugin launches two processes, both with fixed arguments and no shell:
-`tether-gtk` and `zenity --file-selection`. It installs nothing.
+The plugin launches three processes, all with fixed arguments and no shell:
+`tether-proxy`, `tether-gtk` and `zenity --file-selection`. It installs nothing.
 
 Tether's socket protocol is undocumented, so the commands used here were read
 out of `net.cpp` and then checked against a running daemon, because the two do

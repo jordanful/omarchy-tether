@@ -40,16 +40,26 @@ Item {
 
   // ---- connection ---------------------------------------------------------
   readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || ""
-  // An override has to be an absolute path. QML cannot stat a socket, so the
-  // owner and mode of one cannot be checked from here; the default stays inside
-  // $XDG_RUNTIME_DIR, which systemd creates 0700 for the user.
+  // The relay checks the endpoint properly. This only refuses a relative path
+  // early, so a typo fails here instead of one process later.
   readonly property string socketPath: {
     if (socketPathOverride !== "")
       return socketPathOverride.charAt(0) === "/" ? socketPathOverride : ""
     return runtimeDir !== "" ? runtimeDir + "/tether/tetherd.sock" : ""
   }
 
-  readonly property bool daemonUp: socketHolder.item ? socketHolder.item.connected : false
+  // Up means the relay verified the endpoint and connected, not merely that the
+  // process started.
+  readonly property bool daemonUp: proxyReady
+
+  property bool proxyReady: false
+  // Whatever the relay last refused, in its own words. Shown in the panel.
+  property string proxyProblem: ""
+
+  readonly property string proxyPath: {
+    var url = Qt.resolvedUrl("tether-proxy").toString()
+    return url.indexOf("file://") === 0 ? url.substring(7) : url
+  }
 
   // ---- state --------------------------------------------------------------
   property var link: ({})            // last bt_connection_changed
@@ -90,54 +100,67 @@ Item {
   readonly property var visibleThreads: Model.visibleThreads(allThreads, threadLimit)
   // Two transports, two states. Bluetooth carries messages and notifications;
   // Wi-Fi carries the clipboard and files. Either can be up alone.
-  readonly property var state: Model.bluetoothState(daemonUp, link)
+  // When the relay refused the endpoint, that is the useful thing to say. The
+  // generic "start tetherd" line would send someone looking in the wrong place.
+  readonly property var state: {
+    var base = Model.bluetoothState(daemonUp, link)
+    if (daemonUp || proxyProblem === "") return base
+    return { level: base.level, title: base.title, detail: proxyProblem }
+  }
   readonly property var wifi: Model.wifiState(daemonUp, snapshot)
   readonly property bool wifiReady: Model.wifiReady(wifi)
   readonly property bool clipboardAvailable: Model.clipboardAvailable(snapshot)
   readonly property string barTooltip: Model.barTooltip(state, unreadTotal)
   readonly property var openThreadRow: Model.findThread(allThreads, openThread)
 
-  // A Quickshell Socket is single-use: once it has disconnected, writing
-  // `connected = true` on the same object never reconnects it. Measured with a
-  // daemon stopped and restarted underneath one — the retry fired on every
-  // interval, `connected` kept reading false, and the link stayed dead until
-  // the whole shell was restarted. So a retry throws the object away and builds
-  // a new one, which does reconnect. That is the difference between "tetherd
-  // restarted and the bar caught up" and "the bar is dark until you notice".
-  Component {
-    id: socketComponent
+  // Reading happens in tether-proxy, not here.
+  //
+  // Two checks cannot be done from QML at all. `SplitParser` assembles bytes
+  // until it sees the delimiter, inside C++, with no length property, so a peer
+  // that withholds a newline grows that buffer without bound and any QML-side
+  // length test runs only once a frame has already been built. And
+  // `Quickshell.Io.Socket` exposes `path` and `connected` and nothing else: it
+  // cannot stat the endpoint or read peer credentials, so this side has no way
+  // to tell tetherd's socket from anything else sitting at that path.
+  //
+  // So the relay owns both. It stats the socket and every directory above it,
+  // checks SO_PEERCRED, and emits nothing but complete frames under a hard
+  // ceiling. Everything below reads bounded lines from a pipe.
+  Process {
+    id: relay
+    running: false
+    command: ["python3", root.proxyPath, root.socketPath]
+    stdinEnabled: true
 
-    Socket {
-      id: sock
-      path: root.socketPath
-      connected: true
+    stdout: SplitParser {
+      splitMarker: "\n"
+      onRead: function (line) { root.handleLine(line) }
+    }
 
-      parser: SplitParser {
-        splitMarker: "\n"
-        onRead: function (line) { root.handleLine(line) }
-      }
+    // The relay reports faults as JSON on stdout. Anything on stderr is a
+    // Python traceback, which is a bug worth surfacing rather than hiding.
+    stderr: SplitParser {
+      splitMarker: "\n"
+      onRead: function (line) { root.proxyProblem = Model.clampText(line, 300) }
+    }
 
-      // The socket is handed over rather than looked up: this fires while the
-      // Loader is still building, so socketHolder.item is not assigned yet and
-      // the subscribe would go nowhere.
-      onConnectionStateChanged: connected ? root.onDaemonConnected(sock) : root.onDaemonLost()
+    onExited: function (code, status) {
+      root.proxyReady = false
+      root.onDaemonLost()
     }
   }
 
-  Loader {
-    id: socketHolder
-    active: false
-    sourceComponent: socketComponent
+  function startRelay() {
+    if (root.socketPath === "" || relay.running) return
+    relay.running = true
   }
 
-  function restartSocket() {
-    socketHolder.active = false
-    if (root.socketPath !== "") socketHolder.active = true
+  // A changed path means a different endpoint, which has to be re-verified from
+  // scratch rather than reused.
+  onSocketPathChanged: {
+    relay.running = false
+    startRelay()
   }
-
-  // Writing Socket.path leaves a connection already open on the old path alone,
-  // so a changed setting has to rebuild the socket like any other retry.
-  onSocketPathChanged: restartSocket()
 
   // The daemon may be stopped, restarted, or not up yet when the shell starts.
   // triggeredOnStart makes the first attempt immediate; the timer only runs
@@ -147,8 +170,8 @@ Item {
     interval: 4000
     repeat: true
     triggeredOnStart: true
-    running: root.socketPath !== "" && !root.daemonUp
-    onTriggered: root.restartSocket()
+    running: root.socketPath !== "" && !root.proxyReady
+    onTriggered: root.startRelay()
   }
 
   // client_connected and friends say what changed but not what the whole list
@@ -207,25 +230,20 @@ Item {
     }
   }
 
-  function requestOn(socket, payload) {
-    if (!socket || !socket.connected) return false
-    socket.write(JSON.stringify(payload) + "\n")
-    socket.flush()
+  function request(payload) {
+    if (!proxyReady || !relay.running) return false
+    relay.write(JSON.stringify(payload) + "\n")
     return true
   }
 
-  function request(payload) {
-    return requestOn(socketHolder.item, payload)
-  }
-
-  function onDaemonConnected(socket) {
+  function onDaemonConnected() {
     // subscribe replies with a state_snapshot and the Bluetooth link, so the
     // Wi-Fi side needs no separate request here.
-    requestOn(socket, { "command": "subscribe" })
-    requestOn(socket, { "command": "bt_status" })
-    requestOn(socket, { "command": "bt_list_threads" })
-    requestOn(socket, { "command": "clipboard_get" })
-    if (openThread !== "") requestOn(socket, { "command": "bt_list_messages", "thread": openThread })
+    request({ "command": "subscribe" })
+    request({ "command": "bt_status" })
+    request({ "command": "bt_list_threads" })
+    request({ "command": "clipboard_get" })
+    if (openThread !== "") request({ "command": "bt_list_messages", "thread": openThread })
   }
 
   function onFileSendResult(event) {
@@ -248,8 +266,9 @@ Item {
   }
 
   function handleLine(line) {
-    // Measured before it is parsed. JSON.parse on a multi-megabyte string
-    // blocks the QML thread, and that thread is drawing the desktop.
+    // The relay already guarantees frames under its ceiling, so this is a
+    // second line of defence rather than the only one. Kept because it costs a
+    // length compare and covers the relay itself misbehaving.
     if (Model.frameTooLarge(line)) {
       oversizedFrames++
       return
@@ -266,6 +285,27 @@ Item {
     if (!event || typeof event !== "object") return
 
     switch (String(event.command || "")) {
+    // ---- the relay's own frames ----
+    case "proxy_ready":
+      proxyProblem = ""
+      proxyReady = true
+      onDaemonConnected()
+      break
+    case "proxy_closed":
+      proxyReady = false
+      break
+    case "proxy_overflow":
+      // The peer sent more than a frame's worth with no delimiter. The relay
+      // has already dropped the link; say so rather than looking merely idle.
+      proxyReady = false
+      oversizedFrames++
+      proxyProblem = "The daemon sent an oversized frame and the connection was dropped."
+      break
+    case "proxy_error":
+      proxyReady = false
+      proxyProblem = Model.proxyProblem(event)
+      break
+
     case "bt_status":
       btStatus = event
       break
@@ -469,7 +509,7 @@ Item {
 
   function refresh() {
     if (!daemonUp) {
-      restartSocket()
+      startRelay()
       return
     }
     request({ "command": "bt_status" })

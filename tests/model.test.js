@@ -13,7 +13,7 @@ const Model = new Function(
   + "bluetoothState, wifiState, wifiReady, clipboardPreview, clipboardSummary, "
   + "fileSendResult, pickedPath, fileName, shortState, connectionSummary, "
   + "clipboardAvailable, unreadThreadKeys, clampText, frameTooLarge, replyBody, sendablePath, "
-  + "emptyMarked, rememberHandles, markedSeen }"
+  + "emptyMarked, rememberHandles, markedSeen, proxyProblem }"
 )()
 
 let failures = 0
@@ -256,6 +256,19 @@ check("pickedPath takes the first line", Model.pickedPath("/home/a/one.pdf\n/hom
 check("pickedPath on a cancelled picker", Model.pickedPath(""), "")
 check("fileName", Model.fileName("/home/a/report.pdf"), "report.pdf")
 check("fileName of a bare name", Model.fileName("report.pdf"), "report.pdf")
+
+// A refusal has to say something actionable. Silence looks the same as tetherd
+// simply being off, which sends the reader to the wrong place.
+check("proxyProblem explains a missing socket",
+  Model.proxyProblem({ reason: "socket-missing" }).indexOf("tetherd") >= 0, true)
+check("proxyProblem explains a foreign owner",
+  Model.proxyProblem({ reason: "peer-foreign-uid" }).indexOf("another user") >= 0, true)
+check("proxyProblem appends the detail",
+  Model.proxyProblem({ reason: "not-a-socket", detail: "/x/y" }), "That path is not a socket. /x/y")
+check("proxyProblem surfaces an unknown reason rather than hiding it",
+  Model.proxyProblem({ reason: "brand-new-thing" }).indexOf("brand-new-thing") >= 0, true)
+check("proxyProblem with no reason at all",
+  Model.proxyProblem({}).indexOf("No reason given") >= 0, true)
 
 check("barTooltip counts", Model.barTooltip({ level: "ok" }, 3), "3 unread messages")
 check("barTooltip is singular at one", Model.barTooltip({ level: "ok" }, 1), "1 unread message")
